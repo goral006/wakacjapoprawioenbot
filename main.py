@@ -1,87 +1,85 @@
 import requests
+from bs4 import BeautifulSoup
+import re
 from telegram import send_telegram
 
-# =========================
-# 🔥 PARAMETRY WYSZUKIWANIA
-# =========================
+MAX_PRICE = 8000
 
-PAYLOAD = {
-    "d_start_from": "05.09.2026",
-    "d_end_to": "15.09.2026",
-    "nl_length_from": 7,
-    "nl_length_to": 8,
-    "nl_occupancy_adults": 2,
-    "nl_occupancy_children": 1,
-    "nl_ages_children[]": 4,
-
-    "nl_country_id[]": [29, 28, 30, 35, 10, 31, 9],  # Hiszpania, Grecja, Turcja, Tunezja, Cypr itd.
-
-    "nd_review_rating_average_from": 8,
-    "c_price_to": 8000,
-
-    "s_holiday_target": "tours",
-    "sort": "qs"
+SOURCES = {
+    "TUI": "https://www.tui.pl/wczasy",
+    "ITAKA": "https://www.itaka.pl/wczasy/",
+    "CORAL": "https://www.coraltravel.pl/wczasy",
+    "RAINBOW": "https://www.rainbowtours.pl/wczasy",
+    "LASTMINUTE": "https://www.lastminuter.pl/wczasy"
 }
 
-URL = "https://www.travelplanet.pl/wakacje/?s_action=TRIPS_SEARCH"
-
 
 # =========================
-# 🌐 FETCH API
+# 🌐 FETCH
 # =========================
 
-def fetch():
+def fetch(url):
     headers = {
-        "User-Agent": "Mozilla/5.0",
-        "X-Requested-With": "XMLHttpRequest"
+        "User-Agent": "Mozilla/5.0"
     }
 
-    r = requests.get(URL, params=PAYLOAD, headers=headers, timeout=30)
-
-    print("Status:", r.status_code)
-    print("Length:", len(r.text))
-
     try:
-        return r.json()
+        r = requests.get(url, headers=headers, timeout=20)
+        print("GET:", url, "status:", r.status_code)
+        return r.text
     except:
-        return None
+        return ""
 
 
 # =========================
-# 🔎 PARSE JSON OFFERS
+# 🔎 PARSER (UNIVERSAL HEURISTIC)
 # =========================
 
-def parse(data):
+def parse(html, source):
+    try:
+        soup = BeautifulSoup(html, "lxml")
+    except:
+        soup = BeautifulSoup(html, "html.parser")
+
     offers = []
 
-    if not data:
-        return offers
+    blocks = soup.find_all("article")
+    if not blocks:
+        blocks = soup.find_all("div")
 
-    # różne struktury API (zabezpieczenie)
-    items = data.get("offers") or data.get("data") or []
+    for b in blocks:
+        text = " ".join(b.stripped_strings)
 
-    for o in items:
+        if len(text) < 80:
+            continue
+
+        if "zł" not in text:
+            continue
+
+        # cena
+        price_match = re.findall(r"(\d[\d\s]{3,})\s?zł", text)
+        if not price_match:
+            continue
+
         try:
-            price = o.get("price_total") or o.get("price") or 999999
-            name = o.get("hotel_name") or o.get("name")
-            country = o.get("country_name")
-            rating = o.get("rating")
-
-            if not price or price > 8000:
-                continue
-
-            if rating and rating < 8:
-                continue
-
-            offers.append({
-                "price": price,
-                "name": name,
-                "country": country,
-                "rating": rating
-            })
-
+            price = int(price_match[0].replace(" ", ""))
         except:
             continue
+
+        if price > MAX_PRICE:
+            continue
+
+        # heurystyka: musi wyglądać jak oferta
+        keywords = ["hotel", "all inclusive", "HB", "BB", "Turcja", "Grecja", "Hiszpania", "Egipt", "Cypr"]
+
+        if not any(k.lower() in text.lower() for k in keywords):
+            continue
+
+        offers.append({
+            "source": source,
+            "price": price,
+            "text": text[:200]
+        })
 
     return offers
 
@@ -91,24 +89,30 @@ def parse(data):
 # =========================
 
 def main():
-    data = fetch()
+    all_offers = []
 
-    offers = parse(data)
+    for name, url in SOURCES.items():
+        html = fetch(url)
 
-    if not offers:
-        send_telegram("❌ Brak ofert w API response")
+        if not html:
+            continue
+
+        offers = parse(html, name)
+        all_offers.extend(offers)
+
+    if not all_offers:
+        send_telegram("❌ Brak ofert ze wszystkich źródeł")
         return
 
-    offers = sorted(offers, key=lambda x: x["price"])
+    all_offers.sort(key=lambda x: x["price"])
 
-    msg = "🏝 <b>TRAVEL API - PRO BOT</b>\n\n"
+    msg = "🏝 <b>MULTI TRAVEL DEALS BOT</b>\n\n"
 
-    for o in offers[:10]:
+    for o in all_offers[:10]:
         msg += f"""
-🏨 {o['name']}
-🌍 {o['country']}
-⭐ {o['rating']}
+🏷 {o['source']}
 💰 {o['price']} zł
+🧾 {o['text']}
 -------------------
 """
 
