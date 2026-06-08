@@ -1,97 +1,81 @@
 from playwright.sync_api import sync_playwright
 from telegram import send_telegram
+from bs4 import BeautifulSoup
 import re
 
 URL = "https://www.travelplanet.pl/wakacje/?s_action=TRIPS_SEARCH&d_start_from=05.09.2026&d_end_to=15.09.2026&page=1"
 
 
 # =========================
-# 🌐 ZBIERANIE JSON Z API
+# 🌐 RENDER STRONY (JS)
 # =========================
 
-def get_best_json():
-    responses = []
-
-    def handle_response(response):
-        try:
-            if "json" in response.headers.get("content-type", "").lower():
-                try:
-                    responses.append(response.json())
-                except:
-                    pass
-        except:
-            pass
-
+def get_rendered_html():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
 
-        page.on("response", handle_response)
+        page.goto(URL, wait_until="networkidle")
 
-        page.goto(URL, wait_until="domcontentloaded")
-        page.wait_for_timeout(15000)
+        # czekamy aż JS dociągnie oferty
+        page.wait_for_timeout(12000)
+
+        html = page.content()
 
         browser.close()
-
-    if not responses:
-        return None
-
-    return max(responses, key=lambda x: len(str(x)))
+        return html
 
 
 # =========================
-# 🔎 REKURENCYJNE SZUKANIE OFERT
+# 🔎 EXTRACT OFERT Z HTML (REAL DOM)
 # =========================
 
-def extract_offers(obj):
+def parse_offers(html):
+    soup = BeautifulSoup(html, "html.parser")
+
     offers = []
 
-    def walk(x):
-        if isinstance(x, dict):
-            for k, v in x.items():
+    # 🔥 Travelplanet - karty / linki / bloki
+    cards = soup.find_all("a")
 
-                if k.lower() in ["offers", "offer", "results", "trips", "items", "data"]:
-                    if isinstance(v, list):
-                        offers.extend(v)
+    for c in cards:
+        text = c.get_text(" ", strip=True)
+        href = c.get("href")
 
-                walk(v)
+        if not text or len(text) < 80:
+            continue
 
-        elif isinstance(x, list):
-            for i in x:
-                walk(i)
+        # cena
+        price_match = re.search(r"(\d[\d\s]{3,})\s?zł", text)
+        price = None
 
-    walk(obj)
+        if price_match:
+            try:
+                price = int(price_match.group(1).replace(" ", ""))
+            except:
+                pass
+
+        offers.append({
+            "text": text[:250],
+            "price": price,
+            "link": href
+        })
+
     return offers
 
 
 # =========================
-# 💰 CENA
-# =========================
-
-def get_price(o):
-    for key in ["price", "totalPrice", "total_price"]:
-        if isinstance(o, dict) and key in o:
-            try:
-                return float(str(o[key]).replace(" ", ""))
-            except:
-                pass
-    return None
-
-
-# =========================
-# 🧠 FILTR
+# 💰 FILTER
 # =========================
 
 MAX_PRICE = 8000
 
 
 def is_valid(o):
-    price = get_price(o)
-
-    if price is None:
+    if not o["price"]:
         return False
 
-    if price > MAX_PRICE:
+    if o["price"] > MAX_PRICE:
         return False
 
     return True
@@ -102,33 +86,24 @@ def is_valid(o):
 # =========================
 
 def main():
-    data = get_best_json()
+    html = get_rendered_html()
 
-    if not data:
-        send_telegram("❌ Brak danych API (Travelplanet blokuje lub zmienił strukturę)")
-        return
-
-    offers = extract_offers(data)
-
-    if not offers:
-        send_telegram("❌ Nie znaleziono ofert w JSON strukturze")
-        return
+    offers = parse_offers(html)
 
     valid = [o for o in offers if is_valid(o)]
 
     if not valid:
-        send_telegram("❌ Brak ofert do 8000 zł (2+1, 05–15.09.2026)")
+        send_telegram("❌ Brak ofert do 8000 zł (HTML render mode)")
         return
 
-    msg = "🏝 <b>TOP WAKACJE (API FINAL)</b>\n\n"
+    msg = "🏝 <b>TOP WAKACJE (RENDER MODE)</b>\n\n"
 
     for i, o in enumerate(valid[:5]):
         msg += f"""
-🏨 {o.get('name', o.get('title', 'Brak nazwy'))}
-💰 {get_price(o)} zł
-⭐ {o.get('rating', 'brak oceny')}
-🌍 {o.get('country', 'brak')}
-🔗 {o.get('url', '')}
+🏨 Oferta {i+1}
+💰 {o['price']} zł
+📝 {o['text']}
+🔗 {o['link']}
 -------------------
 """
 
