@@ -1,107 +1,92 @@
 from playwright.sync_api import sync_playwright
 from telegram import send_telegram
-import re
+import json
 
 URL = "https://www.travelplanet.pl/wakacje/?s_action=TRIPS_SEARCH&d_start_from=05.09.2026&d_end_to=15.09.2026&page=1"
 
 
 # =========================
-# 🌐 OPEN PAGE + WAIT FOR CARDS
+# 🌐 FULL NETWORK CAPTURE
 # =========================
 
-def get_cards():
+def capture_network():
+    logs = []
+
+    def handle_response(response):
+        try:
+            req = response.request
+            url = response.url
+
+            if any(x in url.lower() for x in ["search", "trip", "offer", "result", "api"]):
+                entry = {
+                    "url": url,
+                    "method": req.method,
+                    "headers": dict(req.headers),
+                }
+
+                try:
+                    if "json" in response.headers.get("content-type", ""):
+                        entry["json"] = response.json()
+                    else:
+                        entry["text"] = response.text()[:500]
+                except:
+                    pass
+
+                logs.append(entry)
+
+        except:
+            pass
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
 
+        page.on("response", handle_response)
+
         page.goto(URL, wait_until="domcontentloaded")
-
-        # 🔥 KLUCZ: czekamy na dynamiczne karty
-        page.wait_for_timeout(12000)
-
-        # próbujemy znaleźć realne elementy ofert
-        cards = page.query_selector_all("a")
-
-        results = []
-
-        for c in cards:
-            try:
-                text = c.inner_text().strip()
-                href = c.get_attribute("href")
-
-                if not text or len(text) < 80:
-                    continue
-
-                results.append({
-                    "text": text,
-                    "link": href
-                })
-            except:
-                continue
+        page.wait_for_timeout(20000)
 
         browser.close()
-        return results
 
-
-# =========================
-# 💰 PRICE EXTRACT
-# =========================
-
-def extract_price(text):
-    match = re.search(r"(\d[\d\s]{3,})\s?zł", text)
-    if not match:
-        return None
-
-    try:
-        return int(match.group(1).replace(" ", ""))
-    except:
-        return None
+    return logs
 
 
 # =========================
 # 🚀 MAIN
 # =========================
 
-MAX_PRICE = 8000
-
-
 def main():
-    cards = get_cards()
+    print("🚀 NETWORK HARVEST START")
 
-    if not cards:
-        send_telegram("❌ Brak cards (selector mode)")
+    logs = capture_network()
+
+    if not logs:
+        send_telegram("❌ Brak requestów network (blokada / lazy load)")
         return
 
-    offers = []
+    with open("network_dump.json", "w", encoding="utf-8") as f:
+        json.dump(logs, f, ensure_ascii=False, indent=2)
 
-    for c in cards:
-        price = extract_price(c["text"])
+    # znajdź największy response JSON
+    jsons = [l for l in logs if "json" in l]
 
-        if not price or price > MAX_PRICE:
-            continue
-
-        offers.append({
-            "text": c["text"][:250],
-            "price": price,
-            "link": c["link"]
-        })
-
-    if not offers:
-        send_telegram("❌ Brak ofert do 8000 zł (selector filtering)")
+    if not jsons:
+        send_telegram(
+            f"📡 Zebrano {len(logs)} requestów\n❌ brak JSON z ofertami\n👉 sprawdzamy network_dump.json"
+        )
         return
 
-    msg = "🏝 <b>TOP WAKACJE (SELECTOR MODE)</b>\n\n"
+    biggest = max(jsons, key=lambda x: len(str(x["json"])))
 
-    for i, o in enumerate(offers[:5]):
-        msg += f"""
-🏨 Oferta {i+1}
-💰 {o['price']} zł
-📝 {o['text']}
-🔗 {o['link']}
--------------------
-"""
+    with open("best_network.json", "w", encoding="utf-8") as f:
+        json.dump(biggest, f, ensure_ascii=False, indent=2)
 
-    send_telegram(msg)
+    send_telegram(
+        "📡 NETWORK CAPTURE OK\n"
+        f"🔎 Requests: {len(logs)}\n"
+        f"📦 JSON: {len(jsons)}\n"
+        "👉 zapisano best_network.json"
+    )
 
 
 if __name__ == "__main__":
