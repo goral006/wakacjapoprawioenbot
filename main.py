@@ -4,23 +4,40 @@ import json
 
 URL = "https://www.travelplanet.pl/wakacje/?s_action=TRIPS_SEARCH&d_start_from=05.09.2026&d_end_to=15.09.2026&page=1"
 
-MAX_PRICE = 8000
-
 
 # =========================
-# 🌐 CAPTURE + PARSE W JEDNYM
+# 🌐 NETWORK CAPTURE (FULL)
 # =========================
 
 def capture_network():
-    responses = []
+    logs = []
 
     def handle_response(response):
         try:
-            if "json" in response.headers.get("content-type", "").lower():
-                try:
-                    responses.append(response.json())
-                except:
-                    pass
+            req = response.request
+
+            entry = {
+                "url": response.url,
+                "method": req.method,
+                "post_data": req.post_data or None,
+            }
+
+            # JSON response
+            try:
+                if "json" in response.headers.get("content-type", "").lower():
+                    entry["json"] = response.json()
+            except:
+                pass
+
+            # TEXT fallback
+            try:
+                if "text" in response.headers.get("content-type", "").lower():
+                    entry["text"] = response.text()[:500]
+            except:
+                pass
+
+            logs.append(entry)
+
         except:
             pass
 
@@ -31,54 +48,41 @@ def capture_network():
         page.on("response", handle_response)
 
         page.goto(URL, wait_until="domcontentloaded")
-        page.wait_for_timeout(15000)
+        page.wait_for_timeout(20000)
 
         browser.close()
 
-    return responses
+    return logs
 
 
 # =========================
-# 🔎 FIND OFFERS
+# 🔎 SEARCH FOR MEANINGFUL DATA
 # =========================
 
-def find_offers(obj):
-    offers = []
+def find_suspicious_data(logs):
+    candidates = []
 
-    def walk(x):
-        if isinstance(x, dict):
-            for k, v in x.items():
+    for l in logs:
+        data = l.get("json")
 
-                if k.lower() in ["offers", "offer", "results", "trips", "items", "data", "list"]:
-                    if isinstance(v, list):
-                        offers.extend(v)
+        if not data:
+            continue
 
-                walk(v)
+        text = str(data).lower()
 
-        elif isinstance(x, list):
-            for i in x:
-                walk(i)
+        # heurystyka: szukamy rzeczy wyglądających jak oferty
+        keywords = ["price", "hotel", "offer", "trip", "board", "country", "rating"]
 
-    walk(obj)
-    return offers
+        score = sum(1 for k in keywords if k in text)
 
+        if score >= 2:
+            candidates.append({
+                "url": l["url"],
+                "score": score,
+                "data": data
+            })
 
-# =========================
-# 💰 PRICE
-# =========================
-
-def get_price(o):
-    if not isinstance(o, dict):
-        return None
-
-    for key in ["price", "totalPrice", "total_price", "amount"]:
-        if key in o:
-            try:
-                return float(str(o[key]).replace(" ", ""))
-            except:
-                pass
-
-    return None
+    return sorted(candidates, key=lambda x: x["score"], reverse=True)
 
 
 # =========================
@@ -86,44 +90,36 @@ def get_price(o):
 # =========================
 
 def main():
-    print("🚀 START SCRAPER")
+    print("🚀 START FULL NETWORK DEBUG")
 
-    data_list = capture_network()
+    logs = capture_network()
 
-    if not data_list:
-        send_telegram("❌ Brak JSON w network")
+    # zapis pełny dump
+    with open("network_full.json", "w", encoding="utf-8") as f:
+        json.dump(logs, f, ensure_ascii=False, indent=2)
+
+    candidates = find_suspicious_data(logs)
+
+    if not candidates:
+        send_telegram(
+            "❌ Nie znaleziono żadnych danych przypominających oferty\n"
+            f"📡 Requests: {len(logs)}\n"
+            "👉 zapisano network_full.json"
+        )
         return
 
-    # 🔥 znajdź największy JSON
-    best = max(data_list, key=lambda x: len(str(x)))
+    best = candidates[0]
 
-    offers = find_offers(best)
+    with open("best_candidate.json", "w", encoding="utf-8") as f:
+        json.dump(best, f, ensure_ascii=False, indent=2)
 
-    if not offers:
-        send_telegram("❌ Nie znaleziono ofert w network JSON")
-        return
-
-    valid = []
-    for o in offers:
-        price = get_price(o)
-        if price and price <= MAX_PRICE:
-            valid.append(o)
-
-    if not valid:
-        send_telegram("❌ Brak ofert do 8000 zł")
-        return
-
-    msg = "🏝 <b>TOP WAKACJE (FINAL ONE-FILE MODE)</b>\n\n"
-
-    for i, o in enumerate(valid[:5]):
-        msg += f"""
-🏨 {o.get('name', o.get('title', 'Brak nazwy'))}
-💰 {get_price(o)} zł
-⭐ {o.get('rating', 'brak oceny')}
-🌍 {o.get('country', 'brak')}
-🔗 {o.get('url', '')}
--------------------
-"""
+    msg = (
+        "📡 <b>NETWORK ANALYSIS COMPLETE</b>\n\n"
+        f"🔎 Requests: {len(logs)}\n"
+        f"🏆 Best candidate score: {best['score']}\n"
+        f"🔗 URL: {best['url']}\n\n"
+        "👉 zapisano best_candidate.json"
+    )
 
     send_telegram(msg)
 
