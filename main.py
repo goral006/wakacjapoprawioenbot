@@ -1,54 +1,74 @@
-from playwright.sync_api import sync_playwright
 from telegram import send_telegram
 import json
 
-URL = "https://www.travelplanet.pl/wakacje/?s_action=TRIPS_SEARCH&d_start_from=05.09.2026&d_end_to=15.09.2026&page=1"
+MAX_PRICE = 8000
 
 
 # =========================
-# 🌐 FULL NETWORK CAPTURE
+# 📦 LOAD NETWORK FILE
 # =========================
 
-def capture_network():
-    logs = []
+def load_network():
+    with open("best_network.json", "r", encoding="utf-8") as f:
+        return json.load(f)
 
-    def handle_response(response):
-        try:
-            req = response.request
-            url = response.url
 
-            if any(x in url.lower() for x in ["search", "trip", "offer", "result", "api"]):
-                entry = {
-                    "url": url,
-                    "method": req.method,
-                    "headers": dict(req.headers),
-                }
+# =========================
+# 🔎 REKURENCYJNE SZUKANIE OFERT
+# =========================
 
-                try:
-                    if "json" in response.headers.get("content-type", ""):
-                        entry["json"] = response.json()
-                    else:
-                        entry["text"] = response.text()[:500]
-                except:
-                    pass
+def find_offers(obj):
+    offers = []
 
-                logs.append(entry)
+    def walk(x):
+        if isinstance(x, dict):
+            for k, v in x.items():
 
-        except:
-            pass
+                # 🔥 typowe klucze ofert
+                if k.lower() in ["offers", "offer", "results", "trips", "items", "data", "list"]:
+                    if isinstance(v, list):
+                        for item in v:
+                            offers.append(item)
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+                walk(v)
 
-        page.on("response", handle_response)
+        elif isinstance(x, list):
+            for i in x:
+                walk(i)
 
-        page.goto(URL, wait_until="domcontentloaded")
-        page.wait_for_timeout(20000)
+    walk(obj)
+    return offers
 
-        browser.close()
 
-    return logs
+# =========================
+# 💰 PRICE EXTRACTION
+# =========================
+
+def get_price(o):
+    if not isinstance(o, dict):
+        return None
+
+    for key in ["price", "totalPrice", "total_price", "amount"]:
+        if key in o:
+            try:
+                return float(str(o[key]).replace(" ", ""))
+            except:
+                pass
+
+    return None
+
+
+# =========================
+# 🧠 FILTER
+# =========================
+
+def is_valid(o):
+    price = get_price(o)
+
+    if price is None:
+        return False
+
+    return price <= MAX_PRICE
 
 
 # =========================
@@ -56,37 +76,33 @@ def capture_network():
 # =========================
 
 def main():
-    print("🚀 NETWORK HARVEST START")
+    data = load_network()
 
-    logs = capture_network()
+    offers = find_offers(data)
 
-    if not logs:
-        send_telegram("❌ Brak requestów network (blokada / lazy load)")
+    if not offers:
+        send_telegram("❌ Nie znaleziono ofert w best_network.json")
         return
 
-    with open("network_dump.json", "w", encoding="utf-8") as f:
-        json.dump(logs, f, ensure_ascii=False, indent=2)
+    valid = [o for o in offers if is_valid(o)]
 
-    # znajdź największy response JSON
-    jsons = [l for l in logs if "json" in l]
-
-    if not jsons:
-        send_telegram(
-            f"📡 Zebrano {len(logs)} requestów\n❌ brak JSON z ofertami\n👉 sprawdzamy network_dump.json"
-        )
+    if not valid:
+        send_telegram("❌ Brak ofert do 8000 zł")
         return
 
-    biggest = max(jsons, key=lambda x: len(str(x["json"])))
+    msg = "🏝 <b>TOP WAKACJE (NETWORK FINAL MODE)</b>\n\n"
 
-    with open("best_network.json", "w", encoding="utf-8") as f:
-        json.dump(biggest, f, ensure_ascii=False, indent=2)
+    for i, o in enumerate(valid[:5]):
+        msg += f"""
+🏨 {o.get('name', o.get('title', 'Brak nazwy'))}
+💰 {get_price(o)} zł
+⭐ {o.get('rating', 'brak oceny')}
+🌍 {o.get('country', 'brak')}
+🔗 {o.get('url', '')}
+-------------------
+"""
 
-    send_telegram(
-        "📡 NETWORK CAPTURE OK\n"
-        f"🔎 Requests: {len(logs)}\n"
-        f"📦 JSON: {len(jsons)}\n"
-        "👉 zapisano best_network.json"
-    )
+    send_telegram(msg)
 
 
 if __name__ == "__main__":
