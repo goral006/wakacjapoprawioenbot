@@ -1,14 +1,16 @@
-name: Travelplanet Bot
+name: Travel Bot Run
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "0 */6 * * *"
 
 jobs:
-  run:
+  run-bot:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Python
@@ -18,12 +20,11 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests beautifulsoup4 playwright
-          playwright install --with-deps
+          pip install -r requirements.txt
+          playwright install chromium
 
       - name: Run bot
         env:
           TOKEN: ${{ secrets.TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python main.py
-- run: playwright install chromium
