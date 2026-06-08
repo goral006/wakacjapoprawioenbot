@@ -1,12 +1,8 @@
 from playwright.sync_api import sync_playwright
 from telegram import send_telegram
 
-MAX_PRICE = 8000
+URL = "https://www.travelplanet.pl/wakacje/?s_action=TRIPS_SEARCH&d_start_from=05.09.2026&d_end_to=15.09.2026&page=1"
 
-
-# =========================
-# 🌐 CAPTURE + RESPONSE
-# =========================
 
 def capture():
     data = []
@@ -15,20 +11,11 @@ def capture():
         try:
             req = response.request
 
-            item = {
-                "url": response.url,
-                "method": req.method,
-                "post": req.post_data
-            }
-
-            try:
-                if "json" in response.headers.get("content-type", ""):
-                    item["json"] = response.json()
-            except:
-                pass
-
-            data.append(item)
-
+            if "json" in response.headers.get("content-type", ""):
+                try:
+                    data.append(response.json())
+                except:
+                    pass
         except:
             pass
 
@@ -38,48 +25,36 @@ def capture():
 
         page.on("response", handle_response)
 
-        page.goto(
-            "https://www.travelplanet.pl/wakacje/?s_action=TRIPS_SEARCH&d_start_from=05.09.2026&d_end_to=15.09.2026&page=1",
-            wait_until="domcontentloaded"
-        )
+        page.goto(URL, wait_until="networkidle")
 
-        page.wait_for_timeout(20000)
+        # 🔥 KLUCZ: wymuszenie JS execution + lazy load trigger
+        page.wait_for_timeout(3000)
+        page.mouse.wheel(0, 1000)
+        page.wait_for_timeout(5000)
 
         browser.close()
 
     return data
 
 
-# =========================
-# 🔎 FIND OFFERS ANYWHERE
-# =========================
-
-def find_offers(obj):
-    offers = []
+def extract(obj):
+    results = []
 
     def walk(x):
         if isinstance(x, dict):
             for k, v in x.items():
-
                 if isinstance(v, list):
                     for i in v:
                         if isinstance(i, dict):
-                            if any(key in i for key in ["price", "title", "name", "hotel"]):
-                                offers.append(i)
-
+                            results.append(i)
                 walk(v)
-
         elif isinstance(x, list):
             for i in x:
                 walk(i)
 
     walk(obj)
-    return offers
+    return results
 
-
-# =========================
-# 💰 PRICE
-# =========================
 
 def get_price(o):
     for k in ["price", "totalPrice", "amount"]:
@@ -91,41 +66,35 @@ def get_price(o):
     return None
 
 
-# =========================
-# 🚀 MAIN
-# =========================
-
 def main():
-    logs = capture()
-
-    jsons = [x.get("json") for x in logs if x.get("json")]
+    jsons = capture()
 
     if not jsons:
-        send_telegram("❌ Brak JSON w network")
+        send_telegram("❌ brak JSON po user-flow")
         return
 
     offers = []
-
     for j in jsons:
-        offers.extend(find_offers(j))
+        offers.extend(extract(j))
 
-    if not offers:
-        send_telegram("❌ Nie znaleziono ofert (single-file mode)")
-        return
-
-    valid = [o for o in offers if get_price(o) and get_price(o) <= MAX_PRICE]
+    valid = []
+    for o in offers:
+        price = get_price(o)
+        if price:
+            valid.append((price, o))
 
     if not valid:
-        send_telegram("❌ Brak ofert do 8000 zł")
+        send_telegram("❌ nadal brak ofert — strona lazy-load / bot detection")
         return
 
-    msg = "🏝 <b>FINAL WORKING SCRAPER</b>\n\n"
+    valid.sort(key=lambda x: x[0])
 
-    for i, o in enumerate(valid[:5]):
+    msg = "🏝 <b>FINAL FLOW SCRAPER</b>\n\n"
+
+    for price, o in valid[:5]:
         msg += f"""
 🏨 {o.get('name', o.get('title', 'Brak'))}
-💰 {get_price(o)} zł
-⭐ {o.get('rating', 'brak')}
+💰 {price} zł
 -------------------
 """
 
