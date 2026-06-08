@@ -1,161 +1,124 @@
-import requests
-from bs4 import BeautifulSoup
 import re
-from urllib.parse import urljoin
+from playwright.sync_api import sync_playwright
 from telegram import send_telegram
 
 MAX_PRICE = 8000
 
-SOURCES = {
-    "RAINBOW": "https://www.rainbowtours.pl/wczasy",
-    "TUI": "https://www.tui.pl/wczasy",
-    "ITAKA": "https://www.itaka.pl/wczasy/",
-    "CORAL": "https://www.coraltravel.pl/wczasy",
-    "LASTMINUTE": "https://www.lastminuter.pl/wczasy"
-}
+SOURCES = [
+    "https://www.rainbowtours.pl/wczasy",
+    "https://www.itaka.pl/wczasy/",
+    "https://www.tui.pl/wczasy/"
+]
 
 
-# =========================
-# 🌐 FETCH
-# =========================
-
-def fetch(url):
-    headers = {"User-Agent": "Mozilla/5.0"}
+def extract_price(text):
+    match = re.findall(r"(\d[\d\s]{3,})\s?zł", text)
+    if not match:
+        return None
     try:
-        r = requests.get(url, headers=headers, timeout=25)
-        print("GET:", url, "STATUS:", r.status_code)
-        return r.text
+        return int(match[0].replace(" ", ""))
     except:
-        return ""
+        return None
 
 
-# =========================
-# 🔎 PARSER (CARD BASED - FIXED)
-# =========================
+def is_valid(text):
+    if "zł" not in text:
+        return False
 
-def parse(html, source, base_url):
-    try:
-        soup = BeautifulSoup(html, "lxml")
-    except:
-        soup = BeautifulSoup(html, "html.parser")
+    price = extract_price(text)
+    if not price or price > MAX_PRICE:
+        return False
 
-    offers = []
+    keywords = [
+        "Turcja", "Grecja", "Hiszpania", "Egipt", "Cypr", "Tunezja",
+        "hotel", "all inclusive"
+    ]
+
+    return any(k.lower() in text.lower() for k in keywords)
+
+
+def scrape():
+    pages = []
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+
+        for url in SOURCES:
+            print("OPEN:", url)
+            page.goto(url, timeout=60000)
+            page.wait_for_timeout(8000)
+
+            pages.append({
+                "url": url,
+                "html": page.content()
+            })
+
+        browser.close()
+
+    return pages
+
+
+def parse(pages):
+    import re
+
+    results = []
     seen = set()
 
-    # 🔥 KLUCZ: tylko potencjalne “karty”
-    cards = soup.find_all("article")
-    if not cards:
-        cards = soup.select("div")
+    for p in pages:
+        html = p["html"]
+        url = p["url"]
 
-    for card in cards:
+        blocks = re.split(r"</article>|</div>", html)
 
-        text = " ".join(card.stripped_strings)
+        for b in blocks:
+            text = re.sub(r"<[^>]+>", " ", b)
+            text = " ".join(text.split())
 
-        if len(text) < 100:
-            continue
+            if len(text) < 100:
+                continue
 
-        if "zł" not in text:
-            continue
+            if not is_valid(text):
+                continue
 
-        # 💰 cena
-        price_match = re.findall(r"(\d[\d\s]{3,})\s?zł", text)
-        if not price_match:
-            continue
+            price = extract_price(text)
+            if not price:
+                continue
 
-        try:
-            price = int(price_match[0].replace(" ", ""))
-        except:
-            continue
+            key = text[:120]
+            if key in seen:
+                continue
+            seen.add(key)
 
-        if price > MAX_PRICE:
-            continue
+            results.append({
+                "price": price,
+                "text": text[:250],
+                "source": url
+            })
 
-        # 🌍 filtr jakości
-        keywords = [
-            "hotel", "all inclusive", "HB", "BB",
-            "Turcja", "Grecja", "Hiszpania", "Egipt", "Cypr", "Tunezja"
-        ]
+    return results
 
-        if not any(k.lower() in text.lower() for k in keywords):
-            continue
-
-        # 📅 daty (tylko jeśli są w tej SAMEJ karcie)
-        date_match = re.search(r"\d{2}\.\d{2}\.\d{4}", text)
-        date = date_match.group(0) if date_match else "brak"
-
-        # ⏱ długość (tylko lokalnie)
-        days_match = re.search(r"(\d+)\s*dni", text)
-        days = days_match.group(1) if days_match else "brak"
-
-        # 🔗 link (najlepszy możliwy z karty)
-        link = None
-
-        if card.name == "a":
-            link = card.get("href")
-
-        if not link:
-            a = card.find("a")
-            if a:
-                link = a.get("href")
-
-        if not link:
-            link = base_url
-
-        link = urljoin(base_url, link)
-
-        # 🔴 deduplikacja
-        key = link + str(price)
-        if key in seen:
-            continue
-        seen.add(key)
-
-        offers.append({
-            "source": source,
-            "price": price,
-            "date": date,
-            "days": days,
-            "text": text[:220],
-            "link": link
-        })
-
-    return offers
-
-
-# =========================
-# 🚀 MAIN
-# =========================
 
 def main():
-    all_offers = []
+    print("🚀 START BOT")
 
-    for name, url in SOURCES.items():
+    pages = scrape()
+    offers = parse(pages)
 
-        html = fetch(url)
+    print("OFFERS:", len(offers))
 
-        if not html:
-            continue
-
-        offers = parse(html, name, url)
-
-        print(f"{name}: {len(offers)} offers")
-
-        all_offers.extend(offers)
-
-    if not all_offers:
-        send_telegram("❌ Brak stabilnych ofert (HTML parsing)")
+    if not offers:
+        send_telegram("❌ Brak ofert PRO BOT")
         return
 
-    all_offers.sort(key=lambda x: x["price"])
+    offers.sort(key=lambda x: x["price"])
 
-    msg = "🏝 <b>MULTI TRAVEL DEALS (STABLE MODE)</b>\n\n"
+    msg = "🏝 <b>PRO TRAVEL BOT</b>\n\n"
 
-    for o in all_offers[:10]:
+    for o in offers[:10]:
         msg += f"""
-🏷 {o['source']}
 💰 {o['price']} zł
-📅 {o['date']}
-⏱ {o['days']} dni
-🔗 {o['link']}
+🔗 {o['source']}
 🧾 {o['text']}
 -------------------
 """
