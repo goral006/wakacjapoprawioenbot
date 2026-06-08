@@ -1,26 +1,22 @@
 from playwright.sync_api import sync_playwright
 from telegram import send_telegram
-import json
+import re
 
 URL = "https://www.travelplanet.pl/wakacje/?s_action=TRIPS_SEARCH&d_start_from=05.09.2026&d_end_to=15.09.2026&page=1"
 
 
 # =========================
-# 🌐 ZBIERANIE WSZYSTKICH JSON
+# 🌐 ZBIERANIE JSON Z API
 # =========================
 
-def get_all_json_responses():
+def get_best_json():
     responses = []
 
     def handle_response(response):
         try:
             if "json" in response.headers.get("content-type", "").lower():
                 try:
-                    data = response.json()
-                    responses.append({
-                        "url": response.url,
-                        "data": data
-                    })
+                    responses.append(response.json())
                 except:
                     pass
         except:
@@ -37,21 +33,68 @@ def get_all_json_responses():
 
         browser.close()
 
-    return responses
-
-
-# =========================
-# 🔍 SZUKANIE NAJWIĘKSZEGO JSON (POTENCJALNE OFERTY)
-# =========================
-
-def find_best_payload(responses):
     if not responses:
         return None
 
-    # wybieramy największy JSON (heurystyka: najwięcej danych)
-    best = max(responses, key=lambda x: len(str(x["data"])))
+    return max(responses, key=lambda x: len(str(x)))
 
-    return best
+
+# =========================
+# 🔎 REKURENCYJNE SZUKANIE OFERT
+# =========================
+
+def extract_offers(obj):
+    offers = []
+
+    def walk(x):
+        if isinstance(x, dict):
+            for k, v in x.items():
+
+                if k.lower() in ["offers", "offer", "results", "trips", "items", "data"]:
+                    if isinstance(v, list):
+                        offers.extend(v)
+
+                walk(v)
+
+        elif isinstance(x, list):
+            for i in x:
+                walk(i)
+
+    walk(obj)
+    return offers
+
+
+# =========================
+# 💰 CENA
+# =========================
+
+def get_price(o):
+    for key in ["price", "totalPrice", "total_price"]:
+        if isinstance(o, dict) and key in o:
+            try:
+                return float(str(o[key]).replace(" ", ""))
+            except:
+                pass
+    return None
+
+
+# =========================
+# 🧠 FILTR
+# =========================
+
+MAX_PRICE = 8000
+
+
+def is_valid(o):
+    price = get_price(o)
+
+    if price is None:
+        return False
+
+    if price > MAX_PRICE:
+        return False
+
+    return True
 
 
 # =========================
@@ -59,33 +102,35 @@ def find_best_payload(responses):
 # =========================
 
 def main():
-    print("🚀 START DEBUG SCRAPER")
+    data = get_best_json()
 
-    responses = get_all_json_responses()
-
-    print(f"📡 JSON responses found: {len(responses)}")
-
-    # zapis pełnego debug
-    with open("debug_all.json", "w", encoding="utf-8") as f:
-        json.dump(responses, f, ensure_ascii=False, indent=2)
-
-    best = find_best_payload(responses)
-
-    if not best:
-        send_telegram("❌ Nie znaleziono żadnych JSON response")
+    if not data:
+        send_telegram("❌ Brak danych API (Travelplanet blokuje lub zmienił strukturę)")
         return
 
-    # zapis najlepszego payloadu
-    with open("best_payload.json", "w", encoding="utf-8") as f:
-        json.dump(best, f, ensure_ascii=False, indent=2)
+    offers = extract_offers(data)
 
-    # przygotuj info do Telegrama
-    msg = (
-        "📡 <b>DEBUG API Travelplanet</b>\n\n"
-        f"🔎 Liczba JSON response: {len(responses)}\n"
-        f"📦 Największy endpoint:\n{best['url']}\n\n"
-        "👉 zapisano best_payload.json"
-    )
+    if not offers:
+        send_telegram("❌ Nie znaleziono ofert w JSON strukturze")
+        return
+
+    valid = [o for o in offers if is_valid(o)]
+
+    if not valid:
+        send_telegram("❌ Brak ofert do 8000 zł (2+1, 05–15.09.2026)")
+        return
+
+    msg = "🏝 <b>TOP WAKACJE (API FINAL)</b>\n\n"
+
+    for i, o in enumerate(valid[:5]):
+        msg += f"""
+🏨 {o.get('name', o.get('title', 'Brak nazwy'))}
+💰 {get_price(o)} zł
+⭐ {o.get('rating', 'brak oceny')}
+🌍 {o.get('country', 'brak')}
+🔗 {o.get('url', '')}
+-------------------
+"""
 
     send_telegram(msg)
 
