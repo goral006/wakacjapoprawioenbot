@@ -1,102 +1,69 @@
 from playwright.sync_api import sync_playwright
 from telegram import send_telegram
+import time
 
-URL = "https://www.travelplanet.pl/wakacje/?s_action=TRIPS_SEARCH&d_start_from=05.09.2026&d_end_to=15.09.2026&page=1"
+URL = "https://www.travelplanet.pl/wakacje/?s_action=TRIPS_SEARCH&d_start_from=05.09.2026&d_end_to=05.09.2026&page=1"
 
 
-def capture():
-    data = []
-
-    def handle_response(response):
-        try:
-            req = response.request
-
-            if "json" in response.headers.get("content-type", ""):
-                try:
-                    data.append(response.json())
-                except:
-                    pass
-        except:
-            pass
-
+def run():
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        # 🔥 PERSISTENT CONTEXT = jak normalna przeglądarka
+        browser = p.chromium.launch_persistent_context(
+            user_data_dir="user_data",
+            headless=False,  # ważne: NIE headless
+            viewport={"width": 1280, "height": 800},
+            locale="pl-PL",
+        )
+
         page = browser.new_page()
 
-        page.on("response", handle_response)
-
+        # 🔥 stealth timing
         page.goto(URL, wait_until="networkidle")
+        time.sleep(5)
 
-        # 🔥 KLUCZ: wymuszenie JS execution + lazy load trigger
-        page.wait_for_timeout(3000)
-        page.mouse.wheel(0, 1000)
-        page.wait_for_timeout(5000)
+        # 🔥 symulacja usera
+        page.mouse.move(300, 400)
+        time.sleep(1)
+        page.mouse.wheel(0, 800)
+        time.sleep(3)
+
+        # 🔥 wymuszenie JS execution chain
+        html = page.content()
 
         browser.close()
 
-    return data
+    return html
 
 
-def extract(obj):
-    results = []
+def extract_prices(html):
+    import re
 
-    def walk(x):
-        if isinstance(x, dict):
-            for k, v in x.items():
-                if isinstance(v, list):
-                    for i in v:
-                        if isinstance(i, dict):
-                            results.append(i)
-                walk(v)
-        elif isinstance(x, list):
-            for i in x:
-                walk(i)
+    prices = re.findall(r"(\d[\d\s]{3,})\s?zł", html)
 
-    walk(obj)
-    return results
+    cleaned = []
 
+    for p in prices:
+        try:
+            cleaned.append(int(p.replace(" ", "")))
+        except:
+            pass
 
-def get_price(o):
-    for k in ["price", "totalPrice", "amount"]:
-        if k in o:
-            try:
-                return float(str(o[k]).replace(" ", ""))
-            except:
-                pass
-    return None
+    return sorted(cleaned)
 
 
 def main():
-    jsons = capture()
+    html = run()
 
-    if not jsons:
-        send_telegram("❌ brak JSON po user-flow")
+    prices = extract_prices(html)
+
+    if not prices:
+        send_telegram("❌ nadal brak danych (stealth required + anti-bot)")
         return
 
-    offers = []
-    for j in jsons:
-        offers.extend(extract(j))
+    msg = "🏝 <b>STEALTH MODE RESULTS</b>\n\n"
 
-    valid = []
-    for o in offers:
-        price = get_price(o)
-        if price:
-            valid.append((price, o))
-
-    if not valid:
-        send_telegram("❌ nadal brak ofert — strona lazy-load / bot detection")
-        return
-
-    valid.sort(key=lambda x: x[0])
-
-    msg = "🏝 <b>FINAL FLOW SCRAPER</b>\n\n"
-
-    for price, o in valid[:5]:
-        msg += f"""
-🏨 {o.get('name', o.get('title', 'Brak'))}
-💰 {price} zł
--------------------
-"""
+    for p in prices[:10]:
+        msg += f"💰 {p} zł\n"
 
     send_telegram(msg)
 
