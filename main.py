@@ -1,124 +1,66 @@
 from playwright.sync_api import sync_playwright
 from telegram import send_telegram
-from bs4 import BeautifulSoup
-import re
+import json
 
 URL = "https://www.travelplanet.pl/wakacje/?s_action=TRIPS_SEARCH&d_start_from=05.09.2026&d_end_to=15.09.2026&page=1"
 
 
 # =========================
-# 🔧 PARAMETRY
+# 🌐 CAPTURE API RESPONSE
 # =========================
 
-MAX_TOTAL_PRICE = 8000
+def get_api_data():
+    data_holder = {"json": None}
 
-AIRPORTS = ["kraków", "katowice", "rzeszów"]
+    def handle_response(response):
+        try:
+            url = response.url.lower()
 
-COUNTRIES = ["hiszpania", "grecja", "turcja", "cypr", "tunezja"]
+            # 🔥 KLUCZ: Travelplanet ładuje oferty przez XHR/fetch
+            if "trip" in url or "search" in url or "offer" in url:
+                if response.headers.get("content-type", "").find("json") != -1:
+                    data_holder["json"] = response.json()
+        except:
+            pass
 
-BOARD = ["all inclusive", "ai", "hb", "fb", "2 posiłki", "3 posiłki"]
-
-PEOPLE = 3  # 2+1 (już tylko informacyjnie)
-
-
-# =========================
-# 🌐 PLAYWRIGHT
-# =========================
-
-def get_html():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
 
-        page.goto(URL, wait_until="networkidle")
-        page.wait_for_timeout(8000)
+        page.on("response", handle_response)
 
-        html = page.content()
+        page.goto(URL, wait_until="domcontentloaded")
+        page.wait_for_timeout(15000)
+
         browser.close()
 
-        return html
+    return data_holder["json"]
 
 
 # =========================
-# 💰 CENA
+# 🧠 PARSING SAFE (FALLBACK)
 # =========================
 
-def extract_price(text):
-    match = re.search(r"(\d[\d\s]{2,})\s?zł", text)
-    if not match:
-        return None
-
-    try:
-        return int(match.group(1).replace(" ", ""))
-    except:
-        return None
-
-
-# =========================
-# 🧠 SCORE (LUŹNIEJSZY)
-# =========================
-
-def score_offer(text):
-    t = text.lower()
-    score = 0
-
-    if any(a in t for a in AIRPORTS):
-        score += 1
-
-    if any(c in t for c in COUNTRIES):
-        score += 2
-
-    if any(b in t for b in BOARD):
-        score += 2
-
-    return score
-
-
-# =========================
-# 💰 FILTR (LUŹNY)
-# =========================
-
-def is_valid(text, price):
-    if not text or price is None:
-        return False
-
-    if price > MAX_TOTAL_PRICE:
-        return False
-
-    return True
-
-
-# =========================
-# 📦 PARSER
-# =========================
-
-def parse_offers(html):
-    soup = BeautifulSoup(html, "html.parser")
-
+def extract_offers(data):
     offers = []
 
-    for a in soup.find_all("a"):
-        text = a.get_text(" ", strip=True)
-        href = a.get("href")
+    if not data:
+        return offers
 
-        if not text or len(text) < 80:
+    # 🔴 struktura może się różnić — dlatego "safe parsing"
+    for item in data.get("offers", []) if isinstance(data, dict) else []:
+
+        try:
+            offers.append({
+                "name": item.get("name", "brak nazwy"),
+                "price": item.get("price", "brak ceny"),
+                "rating": item.get("rating", "brak oceny"),
+                "link": item.get("url", "")
+            })
+        except:
             continue
 
-        price = extract_price(text)
-
-        if not is_valid(text, price):
-            continue
-
-        offers.append({
-            "text": text[:250],
-            "price": price,
-            "score": score_offer(text),
-            "link": href
-        })
-
-    offers.sort(key=lambda x: x["score"], reverse=True)
-
-    return offers[:7]
+    return offers
 
 
 # =========================
@@ -126,31 +68,31 @@ def parse_offers(html):
 # =========================
 
 def main():
-    html = get_html()
+    print("🚀 Starting bot...")
 
-    print("HTML length:", len(html))
+    data = get_api_data()
 
-    offers = parse_offers(html)
-
-    if not offers:
-        send_telegram(
-            "❌ Brak ofert do 8000 zł (2+1 | 05–15.09.2026)"
-        )
+    # 🔍 DEBUG
+    if not data:
+        send_telegram("❌ Nie przechwyciłem API (Travelplanet blokuje lub zmienił endpoint)")
         return
 
-    msg = "🏝 <b>TOP WAKACJE (2+1 | PRO | 8000 zł)</b>\n\n"
+    with open("debug_api.json", "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
-    for i, o in enumerate(offers):
+    offers = extract_offers(data)
+
+    if not offers:
+        send_telegram("❌ API działa, ale brak ofert w strukturze JSON (zmieniony format)")
+        return
+
+    msg = "🏝 <b>TOP OFERTY (API MODE)</b>\n\n"
+
+    for i, o in enumerate(offers[:5]):
         msg += f"""
-🏨 <b>Oferta {i+1}</b>
-💰 Cena: {o['price']} zł
-📊 Dopasowanie: {o['score']}/5
-👨‍👩‍👧 2+1
-📅 7–8 dni (z URL)
-✈️ Kraków / Katowice / Rzeszów
-🌍 ES / GR / TR / CY / TN
-🍽 AI / HB / FB
-📝 {o['text']}
+🏨 <b>{o['name']}</b>
+💰 {o['price']}
+⭐ {o['rating']}
 🔗 {o['link']}
 -------------------
 """
