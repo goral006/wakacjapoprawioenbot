@@ -18,7 +18,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install requests beautifulsoup4 playwright
-playwright install --with-deps
+          playwright install --with-deps
 
       - name: Run bot
         run: python main.py
