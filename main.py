@@ -1,20 +1,45 @@
+from playwright.sync_api import sync_playwright
 from telegram import send_telegram
 import json
+
+URL = "https://www.travelplanet.pl/wakacje/?s_action=TRIPS_SEARCH&d_start_from=05.09.2026&d_end_to=15.09.2026&page=1"
 
 MAX_PRICE = 8000
 
 
 # =========================
-# 📦 LOAD NETWORK FILE
+# 🌐 CAPTURE + PARSE W JEDNYM
 # =========================
 
-def load_network():
-    with open("best_network.json", "r", encoding="utf-8") as f:
-        return json.load(f)
+def capture_network():
+    responses = []
+
+    def handle_response(response):
+        try:
+            if "json" in response.headers.get("content-type", "").lower():
+                try:
+                    responses.append(response.json())
+                except:
+                    pass
+        except:
+            pass
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+
+        page.on("response", handle_response)
+
+        page.goto(URL, wait_until="domcontentloaded")
+        page.wait_for_timeout(15000)
+
+        browser.close()
+
+    return responses
 
 
 # =========================
-# 🔎 REKURENCYJNE SZUKANIE OFERT
+# 🔎 FIND OFFERS
 # =========================
 
 def find_offers(obj):
@@ -24,11 +49,9 @@ def find_offers(obj):
         if isinstance(x, dict):
             for k, v in x.items():
 
-                # 🔥 typowe klucze ofert
                 if k.lower() in ["offers", "offer", "results", "trips", "items", "data", "list"]:
                     if isinstance(v, list):
-                        for item in v:
-                            offers.append(item)
+                        offers.extend(v)
 
                 walk(v)
 
@@ -41,7 +64,7 @@ def find_offers(obj):
 
 
 # =========================
-# 💰 PRICE EXTRACTION
+# 💰 PRICE
 # =========================
 
 def get_price(o):
@@ -59,38 +82,38 @@ def get_price(o):
 
 
 # =========================
-# 🧠 FILTER
-# =========================
-
-def is_valid(o):
-    price = get_price(o)
-
-    if price is None:
-        return False
-
-    return price <= MAX_PRICE
-
-
-# =========================
 # 🚀 MAIN
 # =========================
 
 def main():
-    data = load_network()
+    print("🚀 START SCRAPER")
 
-    offers = find_offers(data)
+    data_list = capture_network()
 
-    if not offers:
-        send_telegram("❌ Nie znaleziono ofert w best_network.json")
+    if not data_list:
+        send_telegram("❌ Brak JSON w network")
         return
 
-    valid = [o for o in offers if is_valid(o)]
+    # 🔥 znajdź największy JSON
+    best = max(data_list, key=lambda x: len(str(x)))
+
+    offers = find_offers(best)
+
+    if not offers:
+        send_telegram("❌ Nie znaleziono ofert w network JSON")
+        return
+
+    valid = []
+    for o in offers:
+        price = get_price(o)
+        if price and price <= MAX_PRICE:
+            valid.append(o)
 
     if not valid:
         send_telegram("❌ Brak ofert do 8000 zł")
         return
 
-    msg = "🏝 <b>TOP WAKACJE (NETWORK FINAL MODE)</b>\n\n"
+    msg = "🏝 <b>TOP WAKACJE (FINAL ONE-FILE MODE)</b>\n\n"
 
     for i, o in enumerate(valid[:5]):
         msg += f"""
