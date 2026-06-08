@@ -26,3 +26,4 @@ jobs:
           TOKEN: ${{ secrets.TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python main.py
+- run: playwright install chromium
