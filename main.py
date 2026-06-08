@@ -6,14 +6,25 @@ import re
 URL = "https://www.travelplanet.pl/wakacje/?s_action=TRIPS_SEARCH&d_start_from=05.09.2026&d_end_to=15.09.2026&page=1"
 
 
-ALLOWED_AIRPORTS = ["kraków", "katowice", "rzeszów"]
+# =========================
+# 🔧 PARAMETRY
+# =========================
 
-ALLOWED_COUNTRIES = ["hiszpania", "cypr", "grecja", "tunezja", "turcja"]
+MAX_TOTAL_PRICE = 6000
+MAX_PER_PERSON = 2200
 
-ALLOWED_BOARD = ["all inclusive", "3 posiłki", "2 posiłki"]
+AIRPORTS = ["kraków", "katowice", "rzeszów"]
 
-MIN_RATING = 8.0
+COUNTRIES = ["hiszpania", "grecja", "turcja", "cypr", "tunezja"]
 
+BOARD = ["all inclusive", "ai", "hb", "fb", "2 posiłki", "3 posiłki"]
+
+PEOPLE = 3  # 2 dorosłych + dziecko
+
+
+# =========================
+# 🌐 PLAYWRIGHT
+# =========================
 
 def get_html():
     with sync_playwright() as p:
@@ -24,43 +35,90 @@ def get_html():
         page.wait_for_timeout(8000)
 
         html = page.content()
-
         browser.close()
+
         return html
 
 
-def extract_rating(text):
-    match = re.search(r"(\d\.\d|\d)", text)
-    if match:
-        try:
-            return float(match.group())
-        except:
-            return None
-    return None
+# =========================
+# 💰 CENA
+# =========================
+
+def extract_price(text):
+    match = re.search(r"(\d[\d\s]{2,})\s?zł", text)
+    if not match:
+        return None
+
+    try:
+        return int(match.group(1).replace(" ", ""))
+    except:
+        return None
 
 
-def is_valid(text):
+# =========================
+# 📅 DŁUGOŚĆ POBYTU (7–8 DNI)
+# =========================
+
+def check_duration(text):
     t = text.lower()
 
-    # ✈️ lotniska
-    if not any(a in t for a in ALLOWED_AIRPORTS):
+    # najczęstsze formaty
+    if "7 dni" in t or "7 noc" in t or "7 nocleg" in t:
+        return True
+
+    if "8 dni" in t or "8 noc" in t or "8 nocleg" in t:
+        return True
+
+    # jeśli brak info → NIE blokujemy (bo Travelplanet często nie pokazuje)
+    return True
+
+
+# =========================
+# 🧠 SCORE
+# =========================
+
+def score_offer(text):
+    t = text.lower()
+    score = 0
+
+    if any(a in t for a in AIRPORTS):
+        score += 1
+
+    if any(c in t for c in COUNTRIES):
+        score += 2
+
+    if any(b in t for b in BOARD):
+        score += 2
+
+    if "7 dni" in t or "8 dni" in t:
+        score += 2
+
+    return score
+
+
+# =========================
+# 💰 BUDŻET
+# =========================
+
+def is_valid(text, price):
+    if not text or price is None:
         return False
 
-    # 🌍 destynacje
-    if not any(c in t for c in ALLOWED_COUNTRIES):
+    if price > MAX_TOTAL_PRICE:
         return False
 
-    # 🍽 wyżywienie
-    if not any(b in t for b in ALLOWED_BOARD):
+    if price / PEOPLE > MAX_PER_PERSON:
         return False
 
-    # ⭐ ocena
-    rating = extract_rating(t)
-    if rating and rating < MIN_RATING:
+    if not check_duration(text):
         return False
 
     return True
 
+
+# =========================
+# 📦 PARSER
+# =========================
 
 def parse_offers(html):
     soup = BeautifulSoup(html, "html.parser")
@@ -71,26 +129,29 @@ def parse_offers(html):
         text = a.get_text(" ", strip=True)
         href = a.get("href")
 
-        if not text or not href:
+        if not text or len(text) < 80:
             continue
 
-        if len(text) < 80:
-            continue
+        price = extract_price(text)
 
-        if not is_valid(text):
+        if not is_valid(text, price):
             continue
-
-        price_match = re.search(r"\d[\d\s]*\s?zł", text)
-        price = price_match.group() if price_match else "brak"
 
         offers.append({
             "text": text[:250],
             "price": price,
+            "score": score_offer(text),
             "link": href
         })
 
+    offers.sort(key=lambda x: x["score"], reverse=True)
+
     return offers[:5]
 
+
+# =========================
+# 🚀 MAIN
+# =========================
 
 def main():
     html = get_html()
@@ -100,19 +161,23 @@ def main():
     offers = parse_offers(html)
 
     if not offers:
-        send_telegram("❌ Brak ofert spełniających warunki (2+1, 8+, AI/HP, wybrane kraje)")
+        send_telegram(
+            "❌ Brak ofert (2+1 | 7–8 dni | 6000 zł | 2200/os)"
+        )
         return
 
-    msg = "🏝 <b>TOP WYBRANE WAKACJE (PRO FILTER)</b>\n\n"
+    msg = "🏝 <b>TOP WAKACJE (2+1 | 7–8 DNI | PRO)</b>\n\n"
 
     for i, o in enumerate(offers):
         msg += f"""
 🏨 <b>Oferta {i+1}</b>
+💰 Cena: {o['price']} zł
+📊 Dopasowanie: {o['score']}/7
+👨‍👩‍👧 2+1
+📅 7–8 dni
 ✈️ Kraków / Katowice / Rzeszów
-🌍 Hiszpania / Grecja / Cypr / Turcja / Tunezja
-⭐ min 8.0
-🍽 AI / 2-3 posiłki
-💰 {o['price']}
+🌍 ES / GR / TR / CY / TN
+🍽 AI / HB / FB
 📝 {o['text']}
 🔗 {o['link']}
 -------------------
