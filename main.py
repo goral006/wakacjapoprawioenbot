@@ -1,33 +1,71 @@
+from playwright.sync_api import sync_playwright
 from telegram import send_telegram
-import json
 
 MAX_PRICE = 8000
 
 
 # =========================
-# 📦 LOAD DATA
+# 🌐 CAPTURE + RESPONSE
 # =========================
 
-def load():
-    with open("best_post.json", "r", encoding="utf-8") as f:
-        return json.load(f)
+def capture():
+    data = []
+
+    def handle_response(response):
+        try:
+            req = response.request
+
+            item = {
+                "url": response.url,
+                "method": req.method,
+                "post": req.post_data
+            }
+
+            try:
+                if "json" in response.headers.get("content-type", ""):
+                    item["json"] = response.json()
+            except:
+                pass
+
+            data.append(item)
+
+        except:
+            pass
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+
+        page.on("response", handle_response)
+
+        page.goto(
+            "https://www.travelplanet.pl/wakacje/?s_action=TRIPS_SEARCH&d_start_from=05.09.2026&d_end_to=15.09.2026&page=1",
+            wait_until="domcontentloaded"
+        )
+
+        page.wait_for_timeout(20000)
+
+        browser.close()
+
+    return data
 
 
 # =========================
-# 🔎 FIND ANY LISTS IN RESPONSE
+# 🔎 FIND OFFERS ANYWHERE
 # =========================
 
-def deep_search(obj):
-    results = []
+def find_offers(obj):
+    offers = []
 
     def walk(x):
         if isinstance(x, dict):
             for k, v in x.items():
 
-                # 🔥 każdy podejrzany klucz
                 if isinstance(v, list):
-                    if len(v) > 0:
-                        results.append(v)
+                    for i in v:
+                        if isinstance(i, dict):
+                            if any(key in i for key in ["price", "title", "name", "hotel"]):
+                                offers.append(i)
 
                 walk(v)
 
@@ -36,52 +74,21 @@ def deep_search(obj):
                 walk(i)
 
     walk(obj)
-    return results
+    return offers
 
 
 # =========================
-# 💰 PRICE EXTRACTION (FLEXIBLE)
+# 💰 PRICE
 # =========================
 
-def get_price(item):
-    if not isinstance(item, dict):
-        return None
-
-    possible_keys = [
-        "price",
-        "totalPrice",
-        "total_price",
-        "amount",
-        "priceValue",
-        "minPrice",
-        "fromPrice"
-    ]
-
-    for k in possible_keys:
-        if k in item:
+def get_price(o):
+    for k in ["price", "totalPrice", "amount"]:
+        if k in o:
             try:
-                return float(str(item[k]).replace(" ", ""))
+                return float(str(o[k]).replace(" ", ""))
             except:
                 pass
-
     return None
-
-
-# =========================
-# 🔎 CHECK IF LOOKS LIKE OFFER
-# =========================
-
-def looks_like_offer(item):
-    if not isinstance(item, dict):
-        return False
-
-    keys = " ".join(item.keys()).lower()
-
-    keywords = ["hotel", "price", "rating", "country", "board", "name", "title"]
-
-    score = sum(1 for k in keywords if k in keys)
-
-    return score >= 2
 
 
 # =========================
@@ -89,41 +96,36 @@ def looks_like_offer(item):
 # =========================
 
 def main():
-    data = load()
+    logs = capture()
 
-    lists = deep_search(data)
+    jsons = [x.get("json") for x in logs if x.get("json")]
+
+    if not jsons:
+        send_telegram("❌ Brak JSON w network")
+        return
 
     offers = []
 
-    for lst in lists:
-        for item in lst:
-            if looks_like_offer(item):
-                offers.append(item)
+    for j in jsons:
+        offers.extend(find_offers(j))
 
     if not offers:
-        send_telegram("❌ Nie znaleziono ofert w best_post.json")
+        send_telegram("❌ Nie znaleziono ofert (single-file mode)")
         return
 
-    valid = []
-
-    for o in offers:
-        price = get_price(o)
-
-        if price and price <= MAX_PRICE:
-            valid.append(o)
+    valid = [o for o in offers if get_price(o) and get_price(o) <= MAX_PRICE]
 
     if not valid:
         send_telegram("❌ Brak ofert do 8000 zł")
         return
 
-    msg = "🏝 <b>FINAL OFFERS (POST ENGINE)</b>\n\n"
+    msg = "🏝 <b>FINAL WORKING SCRAPER</b>\n\n"
 
     for i, o in enumerate(valid[:5]):
         msg += f"""
-🏨 {o.get('name', o.get('title', 'Brak nazwy'))}
+🏨 {o.get('name', o.get('title', 'Brak'))}
 💰 {get_price(o)} zł
-⭐ {o.get('rating', 'brak oceny')}
-🌍 {o.get('country', 'brak')}
+⭐ {o.get('rating', 'brak')}
 -------------------
 """
 
