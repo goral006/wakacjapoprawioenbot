@@ -6,6 +6,13 @@ from telegram import send_telegram
 
 MAX_PRICE = 8000
 
+DATE_START = "05.09.2026"
+DATE_END = "15.09.2026"
+
+MIN_DAYS = 7
+MAX_DAYS = 8
+
+
 SOURCES = {
     "RAINBOW": "https://www.rainbowtours.pl/wczasy",
     "TUI": "https://www.tui.pl/wczasy",
@@ -20,23 +27,35 @@ SOURCES = {
 # =========================
 
 def fetch(url):
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
-
+    headers = {"User-Agent": "Mozilla/5.0"}
     try:
         r = requests.get(url, headers=headers, timeout=25)
-        print("GET:", url, "status:", r.status_code)
         return r.text
     except:
         return ""
 
 
 # =========================
-# 🔎 PARSER + LINKS
+# 🔎 HELPERS (DATES + DAYS)
 # =========================
 
-def parse(html, source_name, base_url):
+def date_ok(text):
+    return DATE_START.replace(".", "") in text.replace(" ", "") or DATE_END.replace(".", "") in text.replace(" ", "")
+
+
+def days_ok(text):
+    match = re.search(r"(\d+)\s*dni", text)
+    if not match:
+        return False
+    days = int(match.group(1))
+    return MIN_DAYS <= days <= MAX_DAYS
+
+
+# =========================
+# 🔎 PARSER
+# =========================
+
+def parse(html, source, base_url):
     try:
         soup = BeautifulSoup(html, "lxml")
     except:
@@ -45,11 +64,9 @@ def parse(html, source_name, base_url):
     offers = []
     seen = set()
 
-    # 🔥 KLUCZ: tylko linki + karty
     elements = soup.find_all("a") + soup.find_all("article") + soup.find_all("div")
 
     for el in elements:
-
         text = " ".join(el.stripped_strings)
 
         if len(text) < 80:
@@ -60,7 +77,6 @@ def parse(html, source_name, base_url):
 
         # 💰 cena
         price_match = re.findall(r"(\d[\d\s]{3,})\s?zł", text)
-
         if not price_match:
             continue
 
@@ -72,7 +88,7 @@ def parse(html, source_name, base_url):
         if price > MAX_PRICE:
             continue
 
-        # 🔴 filtr jakości
+        # 🌍 filtr krajów / ofert
         keywords = [
             "hotel", "all inclusive", "HB", "BB",
             "Turcja", "Grecja", "Hiszpania", "Cypr", "Egipt", "Tunezja"
@@ -81,17 +97,18 @@ def parse(html, source_name, base_url):
         if not any(k.lower() in text.lower() for k in keywords):
             continue
 
+        # 📅 filtr dat
+        if not date_ok(text):
+            continue
+
+        # ⏱ filtr długości
+        if not days_ok(text):
+            continue
+
         # 🔗 link
-        href = el.get("href") if el.name == "a" else None
+        href = el.get("href") or el.get("data-url") or el.get("data-href")
 
-        if not href:
-            # czasem link jest w data-url
-            href = el.get("data-url") or el.get("data-href")
-
-        if href:
-            link = urljoin(base_url, href)
-        else:
-            link = base_url
+        link = urljoin(base_url, href) if href else base_url
 
         # 🔴 deduplikacja
         key = link + str(price)
@@ -100,7 +117,7 @@ def parse(html, source_name, base_url):
         seen.add(key)
 
         offers.append({
-            "source": source_name,
+            "source": source,
             "price": price,
             "text": text[:200],
             "link": link
@@ -130,12 +147,15 @@ def main():
         all_offers.extend(offers)
 
     if not all_offers:
-        send_telegram("❌ Brak ofert z linkami")
+        send_telegram("❌ Brak ofert w zakresie dat i 7-8 dni")
         return
 
     all_offers.sort(key=lambda x: x["price"])
 
-    msg = "🏝 <b>MULTI TRAVEL DEALS + LINKS</b>\n\n"
+    msg = "🏝 <b>TRAVEL DEALS FILTERED (DATE + DAYS)</b>\n\n"
+
+    msg += f"📅 {DATE_START} → {DATE_END}\n"
+    msg += f"⏱ {MIN_DAYS}-{MAX_DAYS} dni\n\n"
 
     for o in all_offers[:10]:
         msg += f"""
