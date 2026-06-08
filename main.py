@@ -1,41 +1,128 @@
 import re
+import json
+import requests
+from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 from telegram import send_telegram
 
 MAX_PRICE = 8000
 
-SOURCES = [
-    "https://www.rainbowtours.pl/wczasy",
-    "https://www.itaka.pl/wczasy/",
-    "https://www.tui.pl/wczasy/"
-]
+SOURCES = {
+    "RAINBOW": "https://www.rainbowtours.pl/wczasy",
+    "ITAKA": "https://www.itaka.pl/wczasy/",
+    "TUI": "https://www.tui.pl/wczasy/"
+}
 
+
+# =========================
+# 🧠 PRICE
+# =========================
 
 def extract_price(text):
-    match = re.findall(r"(\d[\d\s]{3,})\s?zł", text)
-    if not match:
+    m = re.findall(r"(\d[\d\s]{3,})\s?zł", text)
+    if not m:
         return None
     try:
-        return int(match[0].replace(" ", ""))
+        return int(m[0].replace(" ", ""))
     except:
         return None
 
 
-def is_valid(text):
-    if "zł" not in text:
-        return False
+# =========================
+# 🟢 JSON DETECTOR (CORE FIX)
+# =========================
 
-    price = extract_price(text)
-    if not price or price > MAX_PRICE:
-        return False
+def extract_json_objects(text):
+    objects = []
+    stack = 0
+    start = None
 
-    keywords = [
-        "Turcja", "Grecja", "Hiszpania", "Egipt", "Cypr", "Tunezja",
-        "hotel", "all inclusive"
-    ]
+    for i, ch in enumerate(text):
+        if ch == "{":
+            if stack == 0:
+                start = i
+            stack += 1
 
-    return any(k.lower() in text.lower() for k in keywords)
+        elif ch == "}":
+            stack -= 1
+            if stack == 0 and start is not None:
+                chunk = text[start:i+1]
+                objects.append(chunk)
 
+    return objects
+
+
+def parse_json_from_text(text):
+    results = []
+
+    json_chunks = extract_json_objects(text)
+
+    for chunk in json_chunks:
+        try:
+            data = json.loads(chunk)
+
+            # 🔥 UNIVERSAL SEARCH (recursive)
+            def walk(obj):
+                if isinstance(obj, dict):
+                    for k, v in obj.items():
+                        if isinstance(v, (dict, list)):
+                            walk(v)
+
+                        elif isinstance(v, str):
+                            if "zł" in v:
+                                price = extract_price(v)
+                                if price and price <= MAX_PRICE:
+                                    results.append({
+                                        "price": price,
+                                        "text": v[:200]
+                                    })
+
+                elif isinstance(obj, list):
+                    for x in obj:
+                        walk(x)
+
+            walk(data)
+
+        except:
+            continue
+
+    return results
+
+
+# =========================
+# 🟡 HTML FALLBACK
+# =========================
+
+def parse_html(html, url):
+    soup = BeautifulSoup(html, "lxml")
+
+    results = []
+
+    for el in soup.find_all(["article", "div", "a"]):
+        text = " ".join(el.stripped_strings)
+
+        if len(text) < 80:
+            continue
+
+        if "zł" not in text:
+            continue
+
+        price = extract_price(text)
+
+        if not price or price > MAX_PRICE:
+            continue
+
+        results.append({
+            "price": price,
+            "text": text[:200]
+        })
+
+    return results
+
+
+# =========================
+# 🚀 SCRAPER (PLAYWRIGHT)
+# =========================
 
 def scrape():
     pages = []
@@ -44,81 +131,97 @@ def scrape():
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
 
-        for url in SOURCES:
-            print("OPEN:", url)
-            page.goto(url, timeout=60000)
-            page.wait_for_timeout(8000)
+        for name, url in SOURCES.items():
+            print("OPEN:", name, url)
 
-            pages.append({
-                "url": url,
-                "html": page.content()
-            })
+            try:
+                page.goto(url, timeout=60000)
+                page.wait_for_timeout(7000)
+
+                content = page.content()
+                pages.append({
+                    "source": name,
+                    "url": url,
+                    "html": content
+                })
+
+            except Exception as e:
+                print("ERROR:", name, e)
 
         browser.close()
 
     return pages
 
 
-def parse(pages):
-    import re
+# =========================
+# 🔎 PARSE ENGINE
+# =========================
 
-    results = []
+def parse(pages):
+    all_offers = []
     seen = set()
 
     for p in pages:
         html = p["html"]
         url = p["url"]
+        source = p["source"]
 
-        blocks = re.split(r"</article>|</div>", html)
+        # 🟢 1. JSON FIRST
+        json_offers = parse_json_from_text(html)
 
-        for b in blocks:
-            text = re.sub(r"<[^>]+>", " ", b)
-            text = " ".join(text.split())
+        if json_offers:
+            print(source, "JSON OFFERS:", len(json_offers))
 
-            if len(text) < 100:
-                continue
+            for o in json_offers:
+                key = o["text"][:120]
 
-            if not is_valid(text):
-                continue
+                if key in seen:
+                    continue
+                seen.add(key)
 
-            price = extract_price(text)
-            if not price:
-                continue
+                all_offers.append(o)
 
-            key = text[:120]
-            if key in seen:
-                continue
-            seen.add(key)
+        # 🟡 2. HTML fallback
+        else:
+            html_offers = parse_html(html, url)
 
-            results.append({
-                "price": price,
-                "text": text[:250],
-                "source": url
-            })
+            print(source, "HTML OFFERS:", len(html_offers))
 
-    return results
+            for o in html_offers:
+                key = o["text"][:120]
 
+                if key in seen:
+                    continue
+                seen.add(key)
+
+                all_offers.append(o)
+
+    return all_offers
+
+
+# =========================
+# 🚀 MAIN
+# =========================
 
 def main():
-    print("🚀 START BOT")
+    print("🚀 UNIVERSAL PRO BOT START")
 
     pages = scrape()
     offers = parse(pages)
 
-    print("OFFERS:", len(offers))
+    print("TOTAL OFFERS:", len(offers))
 
     if not offers:
-        send_telegram("❌ Brak ofert PRO BOT")
+        send_telegram("❌ Brak ofert (UNIVERSAL PRO)")
         return
 
     offers.sort(key=lambda x: x["price"])
 
-    msg = "🏝 <b>PRO TRAVEL BOT</b>\n\n"
+    msg = "🏝 <b>UNIVERSAL PRO TRAVEL BOT</b>\n\n"
 
     for o in offers[:10]:
         msg += f"""
 💰 {o['price']} zł
-🔗 {o['source']}
 🧾 {o['text']}
 -------------------
 """
