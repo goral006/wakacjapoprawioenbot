@@ -1,8 +1,6 @@
-name: bot
+name: Travelplanet Bot
 
 on:
-  schedule:
-    - cron: "*/15 * * * *"
   workflow_dispatch:
 
 jobs:
@@ -12,13 +10,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - run: pip install requests beautifulsoup4 lxml
+      - name: Install dependencies
+        run: |
+          pip install playwright
+          playwright install --with-deps
 
-      - run: python main.py
-        env:
-          TOKEN: ${{ secrets.TOKEN }}
-          CHAT_ID: ${{ secrets.CHAT_ID }}
+      - name: Run bot
+        run: python main.py
