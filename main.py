@@ -1,11 +1,18 @@
-from telegram import send_telegram
+import requests
+import os
 
-def main():
-    print("START BOT")
+TOKEN = os.getenv("TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
-    send_telegram("TEST BOT DZIAŁA ✔️")
+print("TOKEN:", TOKEN)
+print("CHAT_ID:", CHAT_ID)
 
-    print("END BOT")
+url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
 
-if __name__ == "__main__":
-    main()
+r = requests.post(url, data={
+    "chat_id": CHAT_ID,
+    "text": "TEST MIN BOT"
+})
+
+print(r.status_code)
+print(r.text)
