@@ -6,20 +6,23 @@ URL = "https://www.travelplanet.pl/wakacje/?s_action=TRIPS_SEARCH&d_start_from=0
 
 
 # =========================
-# 🌐 CAPTURE API RESPONSE
+# 🌐 ZBIERANIE WSZYSTKICH JSON
 # =========================
 
-def get_api_data():
-    data_holder = {"json": None}
+def get_all_json_responses():
+    responses = []
 
     def handle_response(response):
         try:
-            url = response.url.lower()
-
-            # 🔥 KLUCZ: Travelplanet ładuje oferty przez XHR/fetch
-            if "trip" in url or "search" in url or "offer" in url:
-                if response.headers.get("content-type", "").find("json") != -1:
-                    data_holder["json"] = response.json()
+            if "json" in response.headers.get("content-type", "").lower():
+                try:
+                    data = response.json()
+                    responses.append({
+                        "url": response.url,
+                        "data": data
+                    })
+                except:
+                    pass
         except:
             pass
 
@@ -34,33 +37,21 @@ def get_api_data():
 
         browser.close()
 
-    return data_holder["json"]
+    return responses
 
 
 # =========================
-# 🧠 PARSING SAFE (FALLBACK)
+# 🔍 SZUKANIE NAJWIĘKSZEGO JSON (POTENCJALNE OFERTY)
 # =========================
 
-def extract_offers(data):
-    offers = []
+def find_best_payload(responses):
+    if not responses:
+        return None
 
-    if not data:
-        return offers
+    # wybieramy największy JSON (heurystyka: najwięcej danych)
+    best = max(responses, key=lambda x: len(str(x["data"])))
 
-    # 🔴 struktura może się różnić — dlatego "safe parsing"
-    for item in data.get("offers", []) if isinstance(data, dict) else []:
-
-        try:
-            offers.append({
-                "name": item.get("name", "brak nazwy"),
-                "price": item.get("price", "brak ceny"),
-                "rating": item.get("rating", "brak oceny"),
-                "link": item.get("url", "")
-            })
-        except:
-            continue
-
-    return offers
+    return best
 
 
 # =========================
@@ -68,34 +59,33 @@ def extract_offers(data):
 # =========================
 
 def main():
-    print("🚀 Starting bot...")
+    print("🚀 START DEBUG SCRAPER")
 
-    data = get_api_data()
+    responses = get_all_json_responses()
 
-    # 🔍 DEBUG
-    if not data:
-        send_telegram("❌ Nie przechwyciłem API (Travelplanet blokuje lub zmienił endpoint)")
+    print(f"📡 JSON responses found: {len(responses)}")
+
+    # zapis pełnego debug
+    with open("debug_all.json", "w", encoding="utf-8") as f:
+        json.dump(responses, f, ensure_ascii=False, indent=2)
+
+    best = find_best_payload(responses)
+
+    if not best:
+        send_telegram("❌ Nie znaleziono żadnych JSON response")
         return
 
-    with open("debug_api.json", "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    # zapis najlepszego payloadu
+    with open("best_payload.json", "w", encoding="utf-8") as f:
+        json.dump(best, f, ensure_ascii=False, indent=2)
 
-    offers = extract_offers(data)
-
-    if not offers:
-        send_telegram("❌ API działa, ale brak ofert w strukturze JSON (zmieniony format)")
-        return
-
-    msg = "🏝 <b>TOP OFERTY (API MODE)</b>\n\n"
-
-    for i, o in enumerate(offers[:5]):
-        msg += f"""
-🏨 <b>{o['name']}</b>
-💰 {o['price']}
-⭐ {o['rating']}
-🔗 {o['link']}
--------------------
-"""
+    # przygotuj info do Telegrama
+    msg = (
+        "📡 <b>DEBUG API Travelplanet</b>\n\n"
+        f"🔎 Liczba JSON response: {len(responses)}\n"
+        f"📦 Największy endpoint:\n{best['url']}\n\n"
+        "👉 zapisano best_payload.json"
+    )
 
     send_telegram(msg)
 
