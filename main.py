@@ -1,3 +1,1 @@
-with open("debug.txt", "w") as f:
-    f.write("NOWA WERSJA DZIALA")
-print("OK")
+print("NOWA_WERSJA_12345")
