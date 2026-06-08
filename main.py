@@ -1,202 +1,140 @@
-import re
-import json
 import requests
-from bs4 import BeautifulSoup
-from playwright.sync_api import sync_playwright
-from telegram import send_telegram
+import json
+import re
+from datetime import datetime
 
-MAX_PRICE = 8000
+# =========================
+# ⚙️ CONFIG
+# =========================
 
-SOURCES = {
-    "RAINBOW": "https://www.rainbowtours.pl/wczasy",
-    "ITAKA": "https://www.itaka.pl/wczasy/",
-    "TUI": "https://www.tui.pl/wczasy/"
-}
+MAX_PRICE = 6000
+
+START_DATE = datetime(2026, 9, 5)
+END_DATE = datetime(2026, 9, 15)
+
+COUNTRIES = ["grecja", "hiszpania", "turcja", "cypr", "tunezja"]
+
+AIRPORTS = ["kraków", "katowice", "rzeszów", "krk", "ktw", "rze"]
+
+MEALS = ["all inclusive", "ai", "hb", "fb"]
+
+BAD = ["kod rabatowy", "voucher", "newsletter", "promocja"]
 
 
 # =========================
-# 🧠 PRICE
+# 📡 TRAVELPLANET FETCH
+# =========================
+
+URL = "https://www.travelplanet.pl/direct/tour_search/ajax-get-search-form-fields-def/?nl_top_country_set_id=1&s_holiday_target=tours"
+
+
+def fetch():
+    headers = {
+        "User-Agent": "Mozilla/5.0"
+    }
+
+    r = requests.get(URL, headers=headers, timeout=30)
+    return r.text
+
+
+# =========================
+# 💰 PRICE
 # =========================
 
 def extract_price(text):
-    m = re.findall(r"(\d[\d\s]{3,})\s?zł", text)
+    m = re.findall(r"(\d[\d\s]{2,})\s?zł", text)
     if not m:
         return None
+    return int(m[0].replace(" ", ""))
+
+
+# =========================
+# 🎯 FILTER
+# =========================
+
+def interesting(text):
+
+    t = text.lower()
+
+    if any(x in t for x in BAD):
+        return False
+
+    if not any(x in t for x in COUNTRIES):
+        return False
+
+    if not any(x in t for x in AIRPORTS):
+        return False
+
+    if not any(x in t for x in MEALS):
+        return False
+
+    price = extract_price(text)
+    if not price or price > MAX_PRICE:
+        return False
+
+    # date + days
+    m = re.search(r"(\d{2}\.\d{2}\.\d{4}).*?(\d+)\s*dni", text)
+    if not m:
+        return False
+
     try:
-        return int(m[0].replace(" ", ""))
+        dep = datetime.strptime(m.group(1), "%d.%m.%Y")
+        days = int(m.group(2))
     except:
-        return None
+        return False
+
+    if dep < START_DATE or dep > END_DATE:
+        return False
+
+    if days not in [7, 8]:
+        return False
+
+    return True
 
 
 # =========================
-# 🟢 JSON DETECTOR (CORE FIX)
+# 🔎 PARSE
 # =========================
 
-def extract_json_objects(text):
-    objects = []
-    stack = 0
-    start = None
+def parse(raw):
 
-    for i, ch in enumerate(text):
-        if ch == "{":
-            if stack == 0:
-                start = i
-            stack += 1
+    offers = []
+    seen = set()
 
-        elif ch == "}":
-            stack -= 1
-            if stack == 0 and start is not None:
-                chunk = text[start:i+1]
-                objects.append(chunk)
+    # JSON scraping fallback
+    chunks = re.findall(r"\{.*?\}", raw)
 
-    return objects
-
-
-def parse_json_from_text(text):
-    results = []
-
-    json_chunks = extract_json_objects(text)
-
-    for chunk in json_chunks:
+    for c in chunks:
         try:
-            data = json.loads(chunk)
+            data = json.loads(c)
 
-            # 🔥 UNIVERSAL SEARCH (recursive)
             def walk(obj):
                 if isinstance(obj, dict):
-                    for k, v in obj.items():
-                        if isinstance(v, (dict, list)):
-                            walk(v)
-
-                        elif isinstance(v, str):
-                            if "zł" in v:
-                                price = extract_price(v)
-                                if price and price <= MAX_PRICE:
-                                    results.append({
-                                        "price": price,
-                                        "text": v[:200]
-                                    })
+                    for v in obj.values():
+                        walk(v)
 
                 elif isinstance(obj, list):
-                    for x in obj:
-                        walk(x)
+                    for v in obj:
+                        walk(v)
+
+                elif isinstance(obj, str):
+                    if "zł" in obj and interesting(obj):
+                        key = obj[:80]
+                        if key in seen:
+                            return
+                        seen.add(key)
+
+                        offers.append({
+                            "text": obj,
+                            "price": extract_price(obj)
+                        })
 
             walk(data)
 
         except:
             continue
 
-    return results
-
-
-# =========================
-# 🟡 HTML FALLBACK
-# =========================
-
-def parse_html(html, url):
-    soup = BeautifulSoup(html, "lxml")
-
-    results = []
-
-    for el in soup.find_all(["article", "div", "a"]):
-        text = " ".join(el.stripped_strings)
-
-        if len(text) < 80:
-            continue
-
-        if "zł" not in text:
-            continue
-
-        price = extract_price(text)
-
-        if not price or price > MAX_PRICE:
-            continue
-
-        results.append({
-            "price": price,
-            "text": text[:200]
-        })
-
-    return results
-
-
-# =========================
-# 🚀 SCRAPER (PLAYWRIGHT)
-# =========================
-
-def scrape():
-    pages = []
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
-
-        for name, url in SOURCES.items():
-            print("OPEN:", name, url)
-
-            try:
-                page.goto(url, timeout=60000)
-                page.wait_for_timeout(7000)
-
-                content = page.content()
-                pages.append({
-                    "source": name,
-                    "url": url,
-                    "html": content
-                })
-
-            except Exception as e:
-                print("ERROR:", name, e)
-
-        browser.close()
-
-    return pages
-
-
-# =========================
-# 🔎 PARSE ENGINE
-# =========================
-
-def parse(pages):
-    all_offers = []
-    seen = set()
-
-    for p in pages:
-        html = p["html"]
-        url = p["url"]
-        source = p["source"]
-
-        # 🟢 1. JSON FIRST
-        json_offers = parse_json_from_text(html)
-
-        if json_offers:
-            print(source, "JSON OFFERS:", len(json_offers))
-
-            for o in json_offers:
-                key = o["text"][:120]
-
-                if key in seen:
-                    continue
-                seen.add(key)
-
-                all_offers.append(o)
-
-        # 🟡 2. HTML fallback
-        else:
-            html_offers = parse_html(html, url)
-
-            print(source, "HTML OFFERS:", len(html_offers))
-
-            for o in html_offers:
-                key = o["text"][:120]
-
-                if key in seen:
-                    continue
-                seen.add(key)
-
-                all_offers.append(o)
-
-    return all_offers
+    return offers
 
 
 # =========================
@@ -204,29 +142,30 @@ def parse(pages):
 # =========================
 
 def main():
-    print("🚀 UNIVERSAL PRO BOT START")
 
-    pages = scrape()
-    offers = parse(pages)
+    print("🚀 TRAVELPLANET BOT START")
 
-    print("TOTAL OFFERS:", len(offers))
+    raw = fetch()
+    offers = parse(raw)
+
+    print("FOUND:", len(offers))
 
     if not offers:
-        send_telegram("❌ Brak ofert (UNIVERSAL PRO)")
+        print("❌ brak ofert")
         return
 
     offers.sort(key=lambda x: x["price"])
 
-    msg = "🏝 <b>UNIVERSAL PRO TRAVEL BOT</b>\n\n"
+    msg = "🏝 TRAVELPLANET CIEKAWE OFERTY\n\n"
 
     for o in offers[:10]:
         msg += f"""
 💰 {o['price']} zł
-🧾 {o['text']}
+🧾 {o['text'][:200]}
 -------------------
 """
 
-    send_telegram(msg)
+    print(msg)
 
 
 if __name__ == "__main__":
