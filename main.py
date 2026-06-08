@@ -7,7 +7,18 @@ URL = "https://www.wakacje.pl/wczasy/?wylot=krakow,katowice,rzeszow&dni=7-8&osob
 
 MAX_PRICE = 8000
 
-COUNTRIES = ["Hiszpania", "Grecja", "Turcja", "Tunezja", "Cypr"]
+KEYWORDS = [
+    "hotel",
+    "all inclusive",
+    "HB",
+    "BB",
+    "Turcja",
+    "Grecja",
+    "Hiszpania",
+    "Cypr",
+    "Egipt",
+    "Tunezja"
+]
 
 
 # =========================
@@ -28,7 +39,7 @@ def fetch_html():
 
 
 # =========================
-# 🔎 PARSE OFFERS (LXML + FALLBACK)
+# 🔎 PARSE OFFERS (CLEAN VERSION)
 # =========================
 
 def parse(html):
@@ -39,19 +50,29 @@ def parse(html):
 
     offers = []
 
-    blocks = soup.find_all(["article", "div", "li"])
+    # 🔥 tylko potencjalne karty ofert
+    blocks = soup.find_all("article")
+
+    if not blocks:
+        blocks = soup.find_all("div")
 
     for b in blocks:
-        text = b.get_text(" ", strip=True)
+        text = " ".join(b.stripped_strings)
 
-        if not text:
+        # 🔴 odfiltruj śmieci UI
+        if len(text) < 100:
             continue
 
         if "zł" not in text:
             continue
 
-        # cena
+        # 🔴 musi wyglądać jak oferta
+        if not any(k.lower() in text.lower() for k in KEYWORDS):
+            continue
+
+        # 💰 cena
         price_match = re.findall(r"(\d[\d\s]{3,})\s?zł", text)
+
         if not price_match:
             continue
 
@@ -61,10 +82,6 @@ def parse(html):
             continue
 
         if price > MAX_PRICE:
-            continue
-
-        # filtr krajów
-        if not any(c in text for c in COUNTRIES):
             continue
 
         offers.append({
@@ -90,7 +107,7 @@ def main():
 
     offers = sorted(offers, key=lambda x: x["price"])
 
-    msg = "🏝 <b>WAKACJE.PL - REAL OFFERS BOT</b>\n\n"
+    msg = "🏝 <b>WAKACJE.PL - CLEAN OFFERS BOT</b>\n\n"
 
     for o in offers[:5]:
         msg += f"""
