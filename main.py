@@ -2,10 +2,7 @@ import requests
 import json
 import re
 from datetime import datetime
-
-# =========================
-# ⚙️ CONFIG
-# =========================
+from telegram import send_telegram
 
 MAX_PRICE = 6000
 
@@ -13,33 +10,13 @@ START_DATE = datetime(2026, 9, 5)
 END_DATE = datetime(2026, 9, 15)
 
 COUNTRIES = ["grecja", "hiszpania", "turcja", "cypr", "tunezja"]
-
 AIRPORTS = ["kraków", "katowice", "rzeszów", "krk", "ktw", "rze"]
-
 MEALS = ["all inclusive", "ai", "hb", "fb"]
 
 BAD = ["kod rabatowy", "voucher", "newsletter", "promocja"]
 
-
-# =========================
-# 📡 TRAVELPLANET FETCH
-# =========================
-
 URL = "https://www.travelplanet.pl/direct/tour_search/ajax-get-search-form-fields-def/?nl_top_country_set_id=1&s_holiday_target=tours"
 
-
-def fetch():
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
-
-    r = requests.get(URL, headers=headers, timeout=30)
-    return r.text
-
-
-# =========================
-# 💰 PRICE
-# =========================
 
 def extract_price(text):
     m = re.findall(r"(\d[\d\s]{2,})\s?zł", text)
@@ -47,10 +24,6 @@ def extract_price(text):
         return None
     return int(m[0].replace(" ", ""))
 
-
-# =========================
-# 🎯 FILTER
-# =========================
 
 def interesting(text):
 
@@ -72,7 +45,6 @@ def interesting(text):
     if not price or price > MAX_PRICE:
         return False
 
-    # date + days
     m = re.search(r"(\d{2}\.\d{2}\.\d{4}).*?(\d+)\s*dni", text)
     if not m:
         return False
@@ -92,16 +64,16 @@ def interesting(text):
     return True
 
 
-# =========================
-# 🔎 PARSE
-# =========================
+def fetch():
+    r = requests.get(URL, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
+    return r.text
+
 
 def parse(raw):
 
     offers = []
     seen = set()
 
-    # JSON scraping fallback
     chunks = re.findall(r"\{.*?\}", raw)
 
     for c in chunks:
@@ -137,13 +109,9 @@ def parse(raw):
     return offers
 
 
-# =========================
-# 🚀 MAIN
-# =========================
-
 def main():
 
-    print("🚀 TRAVELPLANET BOT START")
+    print("🚀 START")
 
     raw = fetch()
     offers = parse(raw)
@@ -151,21 +119,17 @@ def main():
     print("FOUND:", len(offers))
 
     if not offers:
-        print("❌ brak ofert")
+        send_telegram("❌ Brak ciekawych ofert")
         return
 
     offers.sort(key=lambda x: x["price"])
 
-    msg = "🏝 TRAVELPLANET CIEKAWE OFERTY\n\n"
+    msg = "🏝 CIEKAWE OFERTY\n\n"
 
     for o in offers[:10]:
-        msg += f"""
-💰 {o['price']} zł
-🧾 {o['text'][:200]}
--------------------
-"""
+        msg += f"💰 {o['price']} zł\n{o['text'][:200]}\n-------------------\n"
 
-    print(msg)
+    send_telegram(msg)
 
 
 if __name__ == "__main__":
