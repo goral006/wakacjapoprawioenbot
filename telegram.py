@@ -1,16 +1,21 @@
-import requests
 import os
+import requests
 
 TOKEN = os.getenv("TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
+def send_telegram(text):
+    if not TOKEN or not CHAT_ID:
+        print("❌ Missing TOKEN or CHAT_ID")
+        return
 
-def send_telegram(msg):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
 
-    requests.post(url, data={
-        "chat_id": CHAT_ID,
-        "text": msg,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True
-    })
+    try:
+        requests.post(url, data={
+            "chat_id": CHAT_ID,
+            "text": text,
+            "parse_mode": "HTML"
+        })
+    except Exception as e:
+        print("Telegram error:", e)
