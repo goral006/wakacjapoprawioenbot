@@ -1,55 +1,69 @@
-from playwright.sync_api import sync_playwright
-from telegram import send_telegram
+import requests
+from bs4 import BeautifulSoup
 import re
+from telegram import send_telegram
 
-URL = "https://www.travelplanet.pl/wakacje/?s_action=TRIPS_SEARCH&d_start_from=05.09.2026&d_end_to=05.09.2026&page=1"
+URL = "https://www.wakacje.pl/wczasy/?wylot=krakow,katowice,rzeszow&dni=7-8&osoby=2+1&ocena_od=8"
 
 MAX_PRICE = 8000
 
+COUNTRIES = ["Hiszpania", "Grecja", "Turcja", "Tunezja", "Cypr"]
+
 
 # =========================
-# 🌐 CAPTURE + EXTRACT IN ONE RUN
+# 🌐 FETCH HTML
 # =========================
 
-def run_browser():
-    texts = []
+def fetch():
+    headers = {
+        "User-Agent": "Mozilla/5.0"
+    }
+    r = requests.get(URL, headers=headers, timeout=30)
+    return r.text
 
-    def handle_response(response):
+
+# =========================
+# 🔎 PARSE OFFERS
+# =========================
+
+def parse(html):
+    soup = BeautifulSoup(html, "lxml")
+
+    offers = []
+
+    cards = soup.select("div, article, li")
+
+    for c in cards:
+        text = c.get_text(" ", strip=True)
+
+        if not text:
+            continue
+
+        if "zł" not in text:
+            continue
+
+        if not any(k in text for k in COUNTRIES):
+            continue
+
+        price_match = re.findall(r"(\d[\d\s]{3,})\s?zł", text)
+
+        if not price_match:
+            continue
+
         try:
-            txt = response.text()
-            texts.append(txt)
+            price = int(price_match[0].replace(" ", ""))
         except:
-            pass
+            continue
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+        if price > MAX_PRICE:
+            continue
 
-        page.on("response", handle_response)
+        offers.append({
+            "text": text[:300],
+            "price": price
+        })
 
-        page.goto(URL, wait_until="networkidle")
-        page.wait_for_timeout(15000)
-
-        browser.close()
-
-    return texts
-
-
-# =========================
-# 🔎 EXTRACT PRICES
-# =========================
-
-def extract_prices(text):
-    matches = re.findall(r"(\d[\d\s]{2,})\s?zł", text)
-    prices = []
-
-    for m in matches:
-        try:
-            prices.append(int(m.replace(" ", "")))
-        except:
-            pass
-
-    return prices
+    return offers
 
 
 # =========================
@@ -57,32 +71,23 @@ def extract_prices(text):
 # =========================
 
 def main():
-    texts = run_browser()
+    html = fetch()
+    offers = parse(html)
 
-    if not texts:
-        send_telegram("❌ brak danych z network")
+    if not offers:
+        send_telegram("❌ Brak ofert spełniających warunki")
         return
 
-    all_text = "\n".join(texts)
+    offers = sorted(offers, key=lambda x: x["price"])
 
-    prices = extract_prices(all_text)
+    msg = "🏝 <b>OFERTY WAKACJE.PL (BOT v2)</b>\n\n"
 
-    if not prices:
-        send_telegram("❌ brak cen w raw response (blokada / JS runtime data)")
-        return
-
-    valid = [p for p in prices if p <= MAX_PRICE]
-
-    if not valid:
-        send_telegram("❌ brak ofert do 8000 zł")
-        return
-
-    valid.sort()
-
-    msg = "🏝 <b>FINAL ATOMIC SCRAPER</b>\n\n"
-
-    for p in valid[:10]:
-        msg += f"💰 {p} zł\n"
+    for o in offers[:5]:
+        msg += f"""
+💰 {o['price']} zł
+🧾 {o['text']}
+-------------------
+"""
 
     send_telegram(msg)
 
