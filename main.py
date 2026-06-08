@@ -1,94 +1,133 @@
-from playwright.sync_api import sync_playwright
 from telegram import send_telegram
 import json
 
-URL = "https://www.travelplanet.pl/wakacje/?s_action=TRIPS_SEARCH&d_start_from=05.09.2026&d_end_to=15.09.2026&page=1"
+MAX_PRICE = 8000
 
 
-def capture_pairs():
-    pairs = []
+# =========================
+# 📦 LOAD DATA
+# =========================
 
-    def handle_response(response):
-        try:
-            req = response.request
-
-            data = {
-                "url": response.url,
-                "method": req.method,
-                "post": req.post_data,
-                "headers": dict(req.headers)
-            }
-
-            # tylko POST + potencjalne search
-            if req.method == "POST":
-                try:
-                    if "json" in response.headers.get("content-type", ""):
-                        data["response"] = response.json()
-                    else:
-                        data["response_text"] = response.text()[:1000]
-                except:
-                    pass
-
-                pairs.append(data)
-
-        except:
-            pass
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
-
-        page.on("response", handle_response)
-
-        page.goto(URL, wait_until="domcontentloaded")
-        page.wait_for_timeout(20000)
-
-        browser.close()
-
-    return pairs
+def load():
+    with open("best_post.json", "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
-def find_best(pairs):
-    # heurystyka: szukamy największej odpowiedzi
-    best = None
-    best_size = 0
+# =========================
+# 🔎 FIND ANY LISTS IN RESPONSE
+# =========================
 
-    for p in pairs:
-        r = p.get("response") or p.get("response_text")
+def deep_search(obj):
+    results = []
 
-        if not r:
-            continue
+    def walk(x):
+        if isinstance(x, dict):
+            for k, v in x.items():
 
-        size = len(str(r))
+                # 🔥 każdy podejrzany klucz
+                if isinstance(v, list):
+                    if len(v) > 0:
+                        results.append(v)
 
-        if size > best_size:
-            best_size = size
-            best = p
+                walk(v)
 
-    return best
+        elif isinstance(x, list):
+            for i in x:
+                walk(i)
 
+    walk(obj)
+    return results
+
+
+# =========================
+# 💰 PRICE EXTRACTION (FLEXIBLE)
+# =========================
+
+def get_price(item):
+    if not isinstance(item, dict):
+        return None
+
+    possible_keys = [
+        "price",
+        "totalPrice",
+        "total_price",
+        "amount",
+        "priceValue",
+        "minPrice",
+        "fromPrice"
+    ]
+
+    for k in possible_keys:
+        if k in item:
+            try:
+                return float(str(item[k]).replace(" ", ""))
+            except:
+                pass
+
+    return None
+
+
+# =========================
+# 🔎 CHECK IF LOOKS LIKE OFFER
+# =========================
+
+def looks_like_offer(item):
+    if not isinstance(item, dict):
+        return False
+
+    keys = " ".join(item.keys()).lower()
+
+    keywords = ["hotel", "price", "rating", "country", "board", "name", "title"]
+
+    score = sum(1 for k in keywords if k in keys)
+
+    return score >= 2
+
+
+# =========================
+# 🚀 MAIN
+# =========================
 
 def main():
-    pairs = capture_pairs()
+    data = load()
 
-    with open("post_pairs.json", "w", encoding="utf-8") as f:
-        json.dump(pairs, f, ensure_ascii=False, indent=2)
+    lists = deep_search(data)
 
-    best = find_best(pairs)
+    offers = []
 
-    if not best:
-        send_telegram("❌ Nie znaleziono odpowiedzi POST z danymi")
+    for lst in lists:
+        for item in lst:
+            if looks_like_offer(item):
+                offers.append(item)
+
+    if not offers:
+        send_telegram("❌ Nie znaleziono ofert w best_post.json")
         return
 
-    with open("best_post.json", "w", encoding="utf-8") as f:
-        json.dump(best, f, ensure_ascii=False, indent=2)
+    valid = []
 
-    send_telegram(
-        "📡 FINAL TRACE DONE\n"
-        f"📤 POST pairs: {len(pairs)}\n"
-        "🏆 zapisano best_post.json\n"
-        "👉 analizujemy odpowiedź"
-    )
+    for o in offers:
+        price = get_price(o)
+
+        if price and price <= MAX_PRICE:
+            valid.append(o)
+
+    if not valid:
+        send_telegram("❌ Brak ofert do 8000 zł")
+        return
+
+    msg = "🏝 <b>FINAL OFFERS (POST ENGINE)</b>\n\n"
+
+    for i, o in enumerate(valid[:5]):
+        msg += f"""
+🏨 {o.get('name', o.get('title', 'Brak nazwy'))}
+💰 {get_price(o)} zł
+⭐ {o.get('rating', 'brak oceny')}
+🌍 {o.get('country', 'brak')}
+-------------------
+"""
+
+    send_telegram(msg)
 
 
 if __name__ == "__main__":
