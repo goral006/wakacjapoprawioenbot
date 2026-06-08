@@ -10,8 +10,7 @@ URL = "https://www.travelplanet.pl/wakacje/?s_action=TRIPS_SEARCH&d_start_from=0
 # 🔧 PARAMETRY
 # =========================
 
-MAX_TOTAL_PRICE = 6000
-MAX_PER_PERSON = 2200
+MAX_TOTAL_PRICE = 8000
 
 AIRPORTS = ["kraków", "katowice", "rzeszów"]
 
@@ -19,7 +18,7 @@ COUNTRIES = ["hiszpania", "grecja", "turcja", "cypr", "tunezja"]
 
 BOARD = ["all inclusive", "ai", "hb", "fb", "2 posiłki", "3 posiłki"]
 
-PEOPLE = 3  # 2 dorosłych + dziecko
+PEOPLE = 3  # 2+1 (już tylko informacyjnie)
 
 
 # =========================
@@ -56,25 +55,7 @@ def extract_price(text):
 
 
 # =========================
-# 📅 DŁUGOŚĆ POBYTU (7–8 DNI)
-# =========================
-
-def check_duration(text):
-    t = text.lower()
-
-    # najczęstsze formaty
-    if "7 dni" in t or "7 noc" in t or "7 nocleg" in t:
-        return True
-
-    if "8 dni" in t or "8 noc" in t or "8 nocleg" in t:
-        return True
-
-    # jeśli brak info → NIE blokujemy (bo Travelplanet często nie pokazuje)
-    return True
-
-
-# =========================
-# 🧠 SCORE
+# 🧠 SCORE (LUŹNIEJSZY)
 # =========================
 
 def score_offer(text):
@@ -90,14 +71,11 @@ def score_offer(text):
     if any(b in t for b in BOARD):
         score += 2
 
-    if "7 dni" in t or "8 dni" in t:
-        score += 2
-
     return score
 
 
 # =========================
-# 💰 BUDŻET
+# 💰 FILTR (LUŹNY)
 # =========================
 
 def is_valid(text, price):
@@ -105,12 +83,6 @@ def is_valid(text, price):
         return False
 
     if price > MAX_TOTAL_PRICE:
-        return False
-
-    if price / PEOPLE > MAX_PER_PERSON:
-        return False
-
-    if not check_duration(text):
         return False
 
     return True
@@ -146,7 +118,7 @@ def parse_offers(html):
 
     offers.sort(key=lambda x: x["score"], reverse=True)
 
-    return offers[:5]
+    return offers[:7]
 
 
 # =========================
@@ -162,19 +134,19 @@ def main():
 
     if not offers:
         send_telegram(
-            "❌ Brak ofert (2+1 | 7–8 dni | 6000 zł | 2200/os)"
+            "❌ Brak ofert do 8000 zł (2+1 | 05–15.09.2026)"
         )
         return
 
-    msg = "🏝 <b>TOP WAKACJE (2+1 | 7–8 DNI | PRO)</b>\n\n"
+    msg = "🏝 <b>TOP WAKACJE (2+1 | PRO | 8000 zł)</b>\n\n"
 
     for i, o in enumerate(offers):
         msg += f"""
 🏨 <b>Oferta {i+1}</b>
 💰 Cena: {o['price']} zł
-📊 Dopasowanie: {o['score']}/7
+📊 Dopasowanie: {o['score']}/5
 👨‍👩‍👧 2+1
-📅 7–8 dni
+📅 7–8 dni (z URL)
 ✈️ Kraków / Katowice / Rzeszów
 🌍 ES / GR / TR / CY / TN
 🍽 AI / HB / FB
