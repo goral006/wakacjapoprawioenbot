@@ -1,67 +1,88 @@
-from playwright.sync_api import sync_playwright
 from telegram import send_telegram
 import json
+import re
 
-URL = "https://www.travelplanet.pl/wakacje/?s_action=TRIPS_SEARCH&d_start_from=05.09.2026&d_end_to=15.09.2026&page=1"
+MAX_PRICE = 8000
 
 
-def capture_full():
-    logs = []
+# =========================
+# 📦 LOAD TRACE
+# =========================
 
-    def handle_response(response):
+def load():
+    with open("full_trace.json", "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+# =========================
+# 🔎 EXTRACT PRICES FROM TEXT
+# =========================
+
+def extract_prices(text):
+    # szuka "1234 zł"
+    matches = re.findall(r"(\d[\d\s]{2,})\s?zł", text)
+    prices = []
+
+    for m in matches:
         try:
-            req = response.request
-
-            entry = {
-                "url": response.url,
-                "method": req.method,
-                "post": req.post_data,
-            }
-
-            # 🔥 RAW RESPONSE (NAJWAŻNIEJSZE)
-            try:
-                body = response.text()
-                entry["body"] = body[:2000]  # ograniczenie
-            except:
-                pass
-
-            logs.append(entry)
-
+            prices.append(int(m.replace(" ", "")))
         except:
             pass
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+    return prices
 
-        page.on("response", handle_response)
 
-        page.goto(URL, wait_until="networkidle")
-        page.wait_for_timeout(20000)
+# =========================
+# 🔎 FIND OFFER-LIKE BLOCKS
+# =========================
 
-        browser.close()
+def extract_offers(text):
+    offers = []
 
-    return logs
+    # bardzo luźna heurystyka HTML/JSON mix
+    blocks = re.split(r"\{|\[|</div>|</article>|</li>", text)
 
+    for b in blocks:
+        if any(k in b.lower() for k in ["hotel", "osoba", "noc", "all inclusive", "zł"]):
+            offers.append(b)
+
+    return offers
+
+
+# =========================
+# 🚀 MAIN
+# =========================
 
 def main():
-    logs = capture_full()
+    logs = load()
 
-    with open("full_trace.json", "w", encoding="utf-8") as f:
-        json.dump(logs, f, ensure_ascii=False, indent=2)
+    all_text = ""
+    for l in logs:
+        if "body" in l:
+            all_text += l["body"] + "\n"
 
-    # 🔍 szukamy podejrzanych endpointów
-    candidates = [
-        l for l in logs
-        if any(x in l["url"].lower() for x in ["search", "trip", "result", "offer", "ajax"])
-    ]
+    offers_blocks = extract_offers(all_text)
 
-    send_telegram(
-        "📡 FINAL TRACE RAW\n"
-        f"🔎 Requests: {len(logs)}\n"
-        f"🎯 Candidates: {len(candidates)}\n"
-        "👉 zapisano full_trace.json"
-    )
+    if not offers_blocks:
+        send_telegram("❌ brak bloków ofert w raw HTML")
+        return
+
+    prices = extract_prices(all_text)
+
+    valid = [p for p in prices if p <= MAX_PRICE]
+
+    if not valid:
+        send_telegram("❌ brak cen do 8000 zł w raw danych")
+        return
+
+    valid.sort()
+
+    msg = "🏝 <b>FINAL RAW EXTRACTION RESULT</b>\n\n"
+
+    for p in valid[:10]:
+        msg += f"💰 {p} zł\n"
+
+    send_telegram(msg)
 
 
 if __name__ == "__main__":
