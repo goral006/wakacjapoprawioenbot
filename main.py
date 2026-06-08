@@ -1,26 +1,28 @@
-import requests
+from playwright.sync_api import sync_playwright
+from telegram import send_telegram
 
-session = requests.Session()
+URL = "https://www.travelplanet.pl/wakacje/?s_action=TRIPS_SEARCH&d_start_from=05.09.2026&d_end_to=15.09.2026&page=1"
 
-headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "pl-PL,pl;q=0.9,en;q=0.8",
-    "Referer": "https://www.travelplanet.pl/",
-    "Connection": "keep-alive"
-}
+def get_page():
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
 
-url = "https://www.travelplanet.pl/"
+        page.goto(URL, wait_until="networkidle")
+        page.wait_for_timeout(8000)
 
-# 1. najpierw wejście na stronę (ustawia cookies)
-session.get(url, headers=headers)
+        html = page.content()
 
-# 2. dopiero potem search
-search_url = "https://www.travelplanet.pl/wakacje/?s_action=TRIPS_SEARCH&d_start_from=05.09.2026&d_end_to=15.09.2026&page=1"
+        browser.close()
+        return html
 
-r = session.get(search_url, headers=headers)
+def main():
+    html = get_page()
 
-print("Status:", r.status_code)
-print("Length:", len(r.text))
+    print("HTML length:", len(html))
+    print(html[:1000])
 
-print(r.text[:500])
+    send_telegram("TEST: Playwright działa ✔️")
+
+if __name__ == "__main__":
+    main()
