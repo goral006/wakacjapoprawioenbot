@@ -1,93 +1,87 @@
 import requests
-from bs4 import BeautifulSoup
-import re
 from telegram import send_telegram
 
-URL = "https://www.wakacje.pl/wczasy/?wylot=krakow,katowice,rzeszow&dni=7-8&osoby=2+1&ocena_od=8"
+# =========================
+# 🔥 PARAMETRY WYSZUKIWANIA
+# =========================
 
-MAX_PRICE = 8000
+PAYLOAD = {
+    "d_start_from": "05.09.2026",
+    "d_end_to": "15.09.2026",
+    "nl_length_from": 7,
+    "nl_length_to": 8,
+    "nl_occupancy_adults": 2,
+    "nl_occupancy_children": 1,
+    "nl_ages_children[]": 4,
 
-KEYWORDS = [
-    "hotel",
-    "all inclusive",
-    "HB",
-    "BB",
-    "Turcja",
-    "Grecja",
-    "Hiszpania",
-    "Cypr",
-    "Egipt",
-    "Tunezja"
-]
+    "nl_country_id[]": [29, 28, 30, 35, 10, 31, 9],  # Hiszpania, Grecja, Turcja, Tunezja, Cypr itd.
+
+    "nd_review_rating_average_from": 8,
+    "c_price_to": 8000,
+
+    "s_holiday_target": "tours",
+    "sort": "qs"
+}
+
+URL = "https://www.travelplanet.pl/wakacje/?s_action=TRIPS_SEARCH"
 
 
 # =========================
-# 🌐 FETCH HTML
+# 🌐 FETCH API
 # =========================
 
-def fetch_html():
+def fetch():
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        "User-Agent": "Mozilla/5.0",
+        "X-Requested-With": "XMLHttpRequest"
     }
 
-    r = requests.get(URL, headers=headers, timeout=30)
+    r = requests.get(URL, params=PAYLOAD, headers=headers, timeout=30)
 
     print("Status:", r.status_code)
     print("Length:", len(r.text))
 
-    return r.text
-
-
-# =========================
-# 🔎 PARSE OFFERS (CLEAN VERSION)
-# =========================
-
-def parse(html):
     try:
-        soup = BeautifulSoup(html, "lxml")
+        return r.json()
     except:
-        soup = BeautifulSoup(html, "html.parser")
+        return None
 
+
+# =========================
+# 🔎 PARSE JSON OFFERS
+# =========================
+
+def parse(data):
     offers = []
 
-    # 🔥 tylko potencjalne karty ofert
-    blocks = soup.find_all("article")
+    if not data:
+        return offers
 
-    if not blocks:
-        blocks = soup.find_all("div")
+    # różne struktury API (zabezpieczenie)
+    items = data.get("offers") or data.get("data") or []
 
-    for b in blocks:
-        text = " ".join(b.stripped_strings)
-
-        # 🔴 odfiltruj śmieci UI
-        if len(text) < 100:
-            continue
-
-        if "zł" not in text:
-            continue
-
-        # 🔴 musi wyglądać jak oferta
-        if not any(k.lower() in text.lower() for k in KEYWORDS):
-            continue
-
-        # 💰 cena
-        price_match = re.findall(r"(\d[\d\s]{3,})\s?zł", text)
-
-        if not price_match:
-            continue
-
+    for o in items:
         try:
-            price = int(price_match[0].replace(" ", ""))
+            price = o.get("price_total") or o.get("price") or 999999
+            name = o.get("hotel_name") or o.get("name")
+            country = o.get("country_name")
+            rating = o.get("rating")
+
+            if not price or price > 8000:
+                continue
+
+            if rating and rating < 8:
+                continue
+
+            offers.append({
+                "price": price,
+                "name": name,
+                "country": country,
+                "rating": rating
+            })
+
         except:
             continue
-
-        if price > MAX_PRICE:
-            continue
-
-        offers.append({
-            "price": price,
-            "text": text[:300]
-        })
 
     return offers
 
@@ -97,22 +91,24 @@ def parse(html):
 # =========================
 
 def main():
-    html = fetch_html()
+    data = fetch()
 
-    offers = parse(html)
+    offers = parse(data)
 
     if not offers:
-        send_telegram("❌ Brak ofert spełniających warunki")
+        send_telegram("❌ Brak ofert w API response")
         return
 
     offers = sorted(offers, key=lambda x: x["price"])
 
-    msg = "🏝 <b>WAKACJE.PL - CLEAN OFFERS BOT</b>\n\n"
+    msg = "🏝 <b>TRAVEL API - PRO BOT</b>\n\n"
 
-    for o in offers[:5]:
+    for o in offers[:10]:
         msg += f"""
+🏨 {o['name']}
+🌍 {o['country']}
+⭐ {o['rating']}
 💰 {o['price']} zł
-🧾 {o['text']}
 -------------------
 """
 
