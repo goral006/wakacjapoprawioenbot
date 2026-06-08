@@ -7,61 +7,50 @@ URL = "https://www.wakacje.pl/wczasy/?wylot=krakow,katowice,rzeszow&dni=7-8&osob
 
 MAX_PRICE = 8000
 
-COUNTRIES = ["Hiszpania", "Grecja", "Turcja", "Tunezja", "Cypr"]
-
 
 # =========================
-# 🌐 FETCH HTML
+# 🌐 FETCH
 # =========================
 
-def fetch():
+def fetch_html():
     headers = {
         "User-Agent": "Mozilla/5.0"
     }
+
     r = requests.get(URL, headers=headers, timeout=30)
+
+    print("Status:", r.status_code)
+    print("Length:", len(r.text))
+
     return r.text
 
 
 # =========================
-# 🔎 PARSE OFFERS
+# 🔎 PARSE (LXML + FALLBACK)
 # =========================
 
 def parse(html):
-    soup = BeautifulSoup(html, "lxml")
+    try:
+        # 🟢 primary parser
+        soup = BeautifulSoup(html, "lxml")
+    except Exception as e:
+        print("LXML failed, fallback html.parser:", e)
+        soup = BeautifulSoup(html, "html.parser")
+
+    text = soup.get_text(" ", strip=True)
 
     offers = []
 
-    cards = soup.select("div, article, li")
+    prices = re.findall(r"(\d[\d\s]{3,})\s?zł", text)
 
-    for c in cards:
-        text = c.get_text(" ", strip=True)
-
-        if not text:
-            continue
-
-        if "zł" not in text:
-            continue
-
-        if not any(k in text for k in COUNTRIES):
-            continue
-
-        price_match = re.findall(r"(\d[\d\s]{3,})\s?zł", text)
-
-        if not price_match:
-            continue
-
+    for p in prices:
         try:
-            price = int(price_match[0].replace(" ", ""))
+            price = int(p.replace(" ", ""))
         except:
             continue
 
-        if price > MAX_PRICE:
-            continue
-
-        offers.append({
-            "text": text[:300],
-            "price": price
-        })
+        if price <= MAX_PRICE:
+            offers.append(price)
 
     return offers
 
@@ -71,23 +60,20 @@ def parse(html):
 # =========================
 
 def main():
-    html = fetch()
+    html = fetch_html()
+
     offers = parse(html)
 
     if not offers:
-        send_telegram("❌ Brak ofert spełniających warunki")
+        send_telegram("❌ Brak ofert (HTML + lxml + fallback)")
         return
 
-    offers = sorted(offers, key=lambda x: x["price"])
+    offers = sorted(offers)
 
-    msg = "🏝 <b>OFERTY WAKACJE.PL (BOT v2)</b>\n\n"
+    msg = "🏝 <b>WAKACJE.PL - LXML MODE</b>\n\n"
 
-    for o in offers[:5]:
-        msg += f"""
-💰 {o['price']} zł
-🧾 {o['text']}
--------------------
-"""
+    for p in offers[:10]:
+        msg += f"💰 {p} zł\n"
 
     send_telegram(msg)
 
